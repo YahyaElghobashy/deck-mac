@@ -1,0 +1,9 @@
+{
+  "name": "deck-alexa-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local HTTP bridge between Deck (macOS app + widget) and Amazon Alexa via alexa-remote2",
+  "main": "bridge.js",
+  "scripts": { "start": "node bridge.js" },
+  "dependencies": { "alexa-remote2": "^8.1.1" }
+}
