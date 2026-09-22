@@ -1,0 +1,8 @@
+build/
+dist/
+bridge/node_modules/
+vendor/node
+vendor/whisper-cli
+signing/*.pem
+.DS_Store
+*.log

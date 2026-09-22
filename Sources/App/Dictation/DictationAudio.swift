@@ -1,0 +1,217 @@
+import AppKit
+import AVFoundation
+import Foundation
+
+enum VoiceError: LocalizedError {
+    case micDenied, noInput, engineFailed(String), tooShort, silent, whisperMissing, modelMissing, transcribeFailed(String), timedOut, empty
+
+    var errorDescription: String? {
+        switch self {
+        case .micDenied: return "Microphone access is off"
+        case .noInput: return "No microphone found"
+        case .engineFailed(let m): return "Audio engine failed: \(m)"
+        case .tooShort: return "Too short, ignored"
+        case .silent: return "Nothing heard"
+        case .whisperMissing: return "whisper-cli not found"
+        case .modelMissing: return "Whisper model not found"
+        case .transcribeFailed(let m): return "Transcription failed: \(m)"
+        case .timedOut: return "Transcription timed out"
+        case .empty: return "No speech detected"
+        }
+    }
+}
+
+/// Captures the default input straight to a 16 kHz mono WAV — exactly what whisper wants.
+final class Recorder {
+    private let engine = AVAudioEngine()
+    private var file: AVAudioFile?
+    private var converter: AVAudioConverter?
+    private var url: URL?
+    private var startedAt: Date?
+    private var peak: Float = 0
+    private let lock = NSLock()
+    private var pausedAt: Date?
+    private var pausedTotal: TimeInterval = 0
+
+    var onLevel: ((Float) -> Void)?
+
+    private let diskSettings: [String: Any] = [
+        AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: 16_000.0, AVNumberOfChannelsKey: 1,
+        AVLinearPCMBitDepthKey: 16, AVLinearPCMIsFloatKey: false, AVLinearPCMIsBigEndianKey: false, AVLinearPCMIsNonInterleaved: false,
+    ]
+
+    var duration: TimeInterval {
+        guard let startedAt else { return 0 }
+        return (pausedAt ?? Date()).timeIntervalSince(startedAt) - pausedTotal
+    }
+    var isPaused: Bool { pausedAt != nil }
+    var sawSound: Bool { peak > DictationLimits.silenceRMSFloor }
+
+    func pause() {
+        guard engine.isRunning, pausedAt == nil else { return }
+        engine.pause()
+        pausedAt = Date()
+    }
+
+    func resume() {
+        guard let at = pausedAt else { return }
+        pausedTotal += Date().timeIntervalSince(at)
+        pausedAt = nil
+        try? engine.start()
+    }
+
+    func start() throws {
+        peak = 0; pausedAt = nil; pausedTotal = 0
+        let input = engine.inputNode
+        let hw = input.outputFormat(forBus: 0)
+        guard hw.sampleRate > 0, hw.channelCount > 0 else { throw VoiceError.noInput }
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("deck-dictation", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let out = dir.appendingPathComponent("clip-\(UUID().uuidString).wav")
+        url = out
+        let f = try AVAudioFile(forWriting: out, settings: diskSettings)
+        guard let conv = AVAudioConverter(from: hw, to: f.processingFormat) else {
+            throw VoiceError.engineFailed("cannot convert \(Int(hw.sampleRate))Hz to 16kHz")
+        }
+        lock.lock(); file = f; lock.unlock()
+        converter = conv
+        input.installTap(onBus: 0, bufferSize: 4096, format: hw) { [weak self] buf, _ in self?.consume(buf) }
+        engine.prepare()
+        do { try engine.start() } catch { throw VoiceError.engineFailed(error.localizedDescription) }
+        startedAt = Date()
+    }
+
+    private func consume(_ buf: AVAudioPCMBuffer) {
+        if let ch = buf.floatChannelData?[0] {
+            var sum: Float = 0
+            let n = Int(buf.frameLength)
+            for i in 0..<n { sum += ch[i] * ch[i] }
+            let rms = n > 0 ? (sum / Float(n)).squareRoot() : 0
+            if rms > peak { peak = rms }
+            let shaped = min(1, pow(max(0, rms) * 16, 0.72))
+            DispatchQueue.main.async { self.onLevel?(shaped) }
+        }
+        lock.lock(); defer { lock.unlock() }
+        guard let conv = converter, let file else { return }
+        let target = file.processingFormat
+        let ratio = target.sampleRate / buf.format.sampleRate
+        let cap = AVAudioFrameCount(Double(buf.frameLength) * ratio) + 1024
+        guard let out = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: cap) else { return }
+        var supplied = false
+        var err: NSError?
+        conv.convert(to: out, error: &err) { _, status in
+            if supplied { status.pointee = .noDataNow; return nil }
+            supplied = true
+            status.pointee = .haveData
+            return buf
+        }
+        guard err == nil, out.frameLength > 0 else { return }
+        do { try file.write(from: out) } catch { NSLog("[deck] write failed: %@", "\(error)") }
+    }
+
+    @discardableResult
+    func stop() -> (url: URL?, seconds: TimeInterval) {
+        let secs = duration
+        if engine.isRunning {
+            engine.inputNode.removeTap(onBus: 0)
+            engine.stop()
+        }
+        lock.lock(); file = nil; lock.unlock()
+        converter = nil
+        startedAt = nil
+        let u = url
+        url = nil
+        return (u, secs)
+    }
+
+    func discard() {
+        let (u, _) = stop()
+        if let u { try? FileManager.default.removeItem(at: u) }
+    }
+
+    static func requestMic(_ done: @escaping (Bool) -> Void) {
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized: done(true)
+        case .notDetermined: AVCaptureDevice.requestAccess(for: .audio) { ok in DispatchQueue.main.async { done(ok) } }
+        default: done(false)
+        }
+    }
+}
+
+enum Transcriber {
+    /// Runs whisper-cli against the wav; the audio is deleted before returning, on every path.
+    static func run(wav: URL, lang: Lang, completion: @escaping (Result<String, Error>) -> Void) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let base = wav.deletingPathExtension().path
+            let txt = URL(fileURLWithPath: base + ".txt")
+            func cleanup() { try? FileManager.default.removeItem(at: wav); try? FileManager.default.removeItem(at: txt) }
+            func finish(_ r: Result<String, Error>) { cleanup(); DispatchQueue.main.async { completion(r) } }
+            guard let bin = DictationPaths.whisper else { return finish(.failure(VoiceError.whisperMissing)) }
+            guard DictationPaths.modelExists else { return finish(.failure(VoiceError.modelMissing)) }
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: bin)
+            p.arguments = ["-m", DictationPaths.model, "-f", wav.path, "-l", lang.rawValue, "-t", "8", "-otxt", "-of", base]
+            let errPipe = Pipe()
+            p.standardError = errPipe
+            p.standardOutput = Pipe()
+            do { try p.run() } catch { return finish(.failure(VoiceError.transcribeFailed(error.localizedDescription))) }
+            let deadline = DispatchTime.now() + DictationLimits.transcribeTimeout
+            let done = DispatchSemaphore(value: 0)
+            DispatchQueue.global().async { p.waitUntilExit(); done.signal() }
+            if done.wait(timeout: deadline) == .timedOut { p.terminate(); return finish(.failure(VoiceError.timedOut)) }
+            guard p.terminationStatus == 0 else {
+                let e = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                let line = e.split(separator: "\n").last.map(String.init) ?? "exit \(p.terminationStatus)"
+                return finish(.failure(VoiceError.transcribeFailed(line)))
+            }
+            let raw = (try? String(contentsOf: txt, encoding: .utf8)) ?? ""
+            let text = clean(raw)
+            finish(text.isEmpty ? .failure(VoiceError.empty) : .success(text))
+        }
+    }
+
+    private static func clean(_ s: String) -> String {
+        var t = s.replacingOccurrences(of: #"\[[^\]]*\]"#, with: "", options: .regularExpression)
+        t = t.replacingOccurrences(of: #"\([^)]*(BLANK_AUDIO|inaudible|silence)[^)]*\)"#, with: "", options: [.regularExpression, .caseInsensitive])
+        t = t.replacingOccurrences(of: #"[ \t]+"#, with: " ", options: .regularExpression)
+        t = t.replacingOccurrences(of: #"\n{2,}"#, with: "\n", options: .regularExpression)
+        return t.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+enum Inserter {
+    /// Clipboard first, then ⌘V into the focused field when it accepts text. The clipboard keeps
+    /// the transcript either way.
+    static func deliver(_ text: String) -> Bool {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(text, forType: .string)
+        guard DictationPrefs.autoPaste, Permissions.accessibility, focusedAcceptsText() else { return false }
+        guard let src = CGEventSource(stateID: .combinedSessionState) else { return false }
+        src.setLocalEventsFilterDuringSuppressionState([.permitLocalKeyboardEvents, .permitLocalMouseEvents, .permitSystemDefinedEvents],
+                                                       state: .eventSuppressionStateSuppressionInterval)
+        let v: CGKeyCode = 9
+        guard let down = CGEvent(keyboardEventSource: src, virtualKey: v, keyDown: true),
+              let up = CGEvent(keyboardEventSource: src, virtualKey: v, keyDown: false) else { return false }
+        down.flags = .maskCommand
+        up.flags = .maskCommand
+        down.post(tap: .cgAnnotatedSessionEventTap)
+        up.post(tap: .cgAnnotatedSessionEventTap)
+        return true
+    }
+
+    private static func focusedAcceptsText() -> Bool {
+        let sys = AXUIElementCreateSystemWide()
+        var focused: AnyObject?
+        guard AXUIElementCopyAttributeValue(sys, kAXFocusedUIElementAttribute as CFString, &focused) == .success, let element = focused else { return false }
+        let el = element as! AXUIElement
+        var roleRef: AnyObject?
+        AXUIElementCopyAttributeValue(el, kAXRoleAttribute as CFString, &roleRef)
+        let role = roleRef as? String ?? ""
+        let textRoles: Set<String> = [kAXTextFieldRole as String, kAXTextAreaRole as String, kAXComboBoxRole as String, "AXSearchField"]
+        if textRoles.contains(role) { return true }
+        var settable = DarwinBoolean(false)
+        if AXUIElementIsAttributeSettable(el, kAXValueAttribute as CFString, &settable) == .success, settable.boolValue { return true }
+        return false
+    }
+}
