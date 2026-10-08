@@ -2,6 +2,7 @@ import AppKit
 import AVFoundation
 import Combine
 import Foundation
+import Murmur
 
 /// Owns the chord → record → whisper → paste loop (Murmur's app delegate, minus the status item).
 @MainActor
@@ -20,6 +21,7 @@ final class DictationController {
     private init() {}
 
     func start() {
+        DictationPaths.modelPathProvider = { DeckSettings.load().whisperModelPath }
         DictationPrefs.migrateFromMurmur()
         state.lang = DictationPrefs.lang
         state.autoPaste = DictationPrefs.autoPaste

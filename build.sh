@@ -17,8 +17,15 @@ SHARED=( "$ROOT"/Sources/Shared/*.swift )
 APP_SHARED=( ${SHARED:#*Intents.swift} )
 COMMON=( -O -swift-version 5 -parse-as-library -target "$TARGET" -sdk "$SDK" -suppress-warnings )
 
+# Murmur, the voice core (Packages/Murmur), compiled first as a static library Deck links.
+MODULES="$TMP/modules"; mkdir -p "$MODULES"
+echo "▸ compiling Murmur…"
+"$SWIFTC" "${COMMON[@]}" -whole-module-optimization -module-name Murmur -emit-module -emit-module-path "$MODULES/Murmur.swiftmodule" \
+  -emit-library -static -o "$MODULES/libMurmur.a" "$ROOT"/Packages/Murmur/Sources/Murmur/*.swift
+
 echo "▸ compiling app…"
-"$SWIFTC" "${COMMON[@]}" -module-name Deck "${APP_SHARED[@]}" "$ROOT"/Sources/App/*.swift "$ROOT"/Sources/App/Dictation/*.swift \
+"$SWIFTC" "${COMMON[@]}" -module-name Deck -I "$MODULES" -L "$MODULES" -lMurmur \
+  "${APP_SHARED[@]}" "$ROOT"/Sources/App/*.swift "$ROOT"/Sources/App/Dictation/*.swift \
   -framework SwiftUI -framework AppKit -framework WidgetKit -framework AppIntents -framework Speech -framework AVFoundation \
   -framework Carbon -framework Combine -o "$APP/Contents/MacOS/Deck"
 

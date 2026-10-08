@@ -6,3 +6,4 @@ vendor/whisper-cli
 signing/*.pem
 .DS_Store
 *.log
+Packages/*/.build/
