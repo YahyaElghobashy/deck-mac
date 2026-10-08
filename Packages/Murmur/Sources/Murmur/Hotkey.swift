@@ -2,8 +2,8 @@ import Carbon.HIToolbox
 import CoreGraphics
 import Foundation
 
-/// Watches ⌃⌥Z (hold to talk) and ⌃⌥. (cycle language) through a session event tap and
-/// swallows both so the characters never reach the focused app. The lock gesture is a second
+/// Watches ⌃⌥Z (hold to talk), ⌃⌥. (cycle language) and the paste-last and copy-last chords
+/// through a session event tap and swallows them so the characters never reach the focused app. The lock gesture is a second
 /// Z tap while ⌃⌥ are still held: a modifier release in between resets the chain.
 public final class HotkeyMonitor {
     private var tap: CFMachPort?
@@ -17,6 +17,12 @@ public final class HotkeyMonitor {
     public var onDoubleTap: (() -> Void)?
     public var onCycleLang: (() -> Void)?
     public var onEscape: (() -> Void)?
+    public var onPasteLast: (() -> Void)?
+    public var onCopyLast: (() -> Void)?
+
+    /// Key codes for ⌃⌥<key> paste-last and copy-last; nil turns a shortcut off.
+    public var pasteLastCode: Int? = kVK_ANSI_V
+    public var copyLastCode: Int? = kVK_ANSI_C
 
     public private(set) var running = false
 
@@ -72,6 +78,14 @@ public final class HotkeyMonitor {
 
         if type == .keyDown, chord, noCmd, code == kVK_ANSI_Period {
             DispatchQueue.main.async { self.onCycleLang?() }
+            return nil
+        }
+
+        for (wanted, action) in [(pasteLastCode, onPasteLast), (copyLastCode, onCopyLast)] {
+            guard chord, noCmd, let wanted, code == wanted else { continue }
+            if type == .keyDown, event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
+                DispatchQueue.main.async { action?() }
+            }
             return nil
         }
 

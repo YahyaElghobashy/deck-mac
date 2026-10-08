@@ -5,8 +5,9 @@ import Foundation
 public enum Inserter {
     /// ⌘V into the focused field when it accepts text, with the user's clipboard put back
     /// afterwards. When there is nowhere to paste, the transcript stays on the clipboard.
-    public static func deliver(_ text: String) -> Bool {
-        guard DictationPrefs.autoPaste, Permissions.accessibility, focusedAcceptsText(),
+    /// `force` pastes even with auto-paste off, for an explicit "paste last".
+    public static func deliver(_ text: String, force: Bool = false) -> Bool {
+        guard force || DictationPrefs.autoPaste, Permissions.accessibility, focusedAcceptsText(),
               let (down, up) = pasteKeystroke() else {
             ClipboardSession.shared.put(text, restore: false)
             return false

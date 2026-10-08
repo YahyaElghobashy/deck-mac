@@ -7,6 +7,8 @@ import Murmur
 //     input is copied first, because the transcriber deletes its audio on every path.
 // murmur check-clipboard
 //     Exercises clipboard restore on a private pasteboard (never the user's clipboard).
+// murmur check-last
+//     Checks the 24-hour window for paste-last and copy-last, and the shortcut key codes.
 
 let args = Array(CommandLine.arguments.dropFirst())
 func value(_ flag: String) -> String? {
@@ -41,8 +43,23 @@ case "transcribe":
 case "check-clipboard":
     exit(ClipboardCheck.run() ? 0 : 1)
 
+case "check-last":
+    var ok = true
+    func check(_ name: String, _ pass: Bool) { print("\(pass ? "PASS" : "FAIL")  \(name)"); ok = ok && pass }
+    check("nothing before the first dictation", LastDictation.text == nil)
+    LastDictation.record("old", at: Date().addingTimeInterval(-LastDictation.lifetime - 1))
+    check("a dictation older than 24 hours is gone", LastDictation.text == nil)
+    LastDictation.record("recent", at: Date().addingTimeInterval(-LastDictation.lifetime + 60))
+    check("a dictation 23h59m old is still there", LastDictation.text == "recent")
+    LastDictation.record("now")
+    check("the newest dictation replaces the previous one", LastDictation.text == "now")
+    check("⌃⌥V and ⌃⌥C map to their physical keys", DictationKeys.code(for: "v") == 9 && DictationKeys.code(for: "C") == 8)
+    check("Z is never offered as a recovery key", DictationKeys.code(for: "z") == nil)
+    print(ok ? "all last-dictation checks passed" : "last-dictation checks FAILED")
+    exit(ok ? 0 : 1)
+
 default:
-    fail("usage: murmur transcribe <file.wav> … | murmur check-clipboard", code: 64)
+    fail("usage: murmur transcribe <file.wav> … | murmur check-clipboard | murmur check-last", code: 64)
 }
 
 enum ClipboardCheck {

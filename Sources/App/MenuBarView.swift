@@ -154,3 +154,31 @@ struct DictationPanel: View {
         .padding(10).card(tint: d.armed ? nil : Theme.gold, radius: 10)
     }
 }
+
+/// ⌃⌥<letter> shortcuts that paste or copy the last dictation again, for 24 hours.
+struct RecoveryShortcuts: View {
+    let alexaKey: String
+    @ObservedObject private var d = DictationController.shared.state
+    private static let choices = ["v", "c", "b", "g", "l", "n", "p", "r", "y"]
+
+    var body: some View {
+        HStack(spacing: 14) {
+            picker("Paste last", selection: d.pasteLastKey, taken: d.copyLastKey) { DictationController.shared.setPasteLastKey($0) }
+            picker("Copy last", selection: d.copyLastKey, taken: d.pasteLastKey) { DictationController.shared.setCopyLastKey($0) }
+            Text("re-use the last dictation for 24 hours").font(.system(size: 11)).foregroundStyle(Theme.text3)
+            Spacer()
+        }
+    }
+
+    private func picker(_ title: String, selection: String, taken: String, set: @escaping (String) -> Void) -> some View {
+        HStack(spacing: 6) {
+            Text("\(title) ⌃⌥").font(.system(size: 11)).foregroundStyle(Theme.text3)
+            Picker("", selection: Binding(get: { selection }, set: set)) {
+                ForEach(Self.choices.filter { $0 == selection || ($0 != taken && $0 != alexaKey.lowercased()) }, id: \.self) {
+                    Text($0.uppercased()).tag($0)
+                }
+            }
+            .labelsHidden().frame(width: 56)
+        }
+    }
+}

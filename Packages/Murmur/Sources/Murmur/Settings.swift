@@ -1,3 +1,4 @@
+import Carbon.HIToolbox
 import Foundation
 
 // Deck's dictation module, Murmur. Hold ⌃⌥Z to talk; tap Z again while ⌃⌥ is still held to
@@ -77,6 +78,40 @@ public enum DictationPrefs {
     public static var totalWords: Int {
         get { d.integer(forKey: "dictation.totalWords") }
         set { d.set(newValue, forKey: "dictation.totalWords") }
+    }
+    /// Letter for ⌃⌥<letter> that pastes the last dictation again.
+    public static var pasteLastKey: String {
+        get { d.string(forKey: "dictation.pasteLastKey") ?? "v" }
+        set { d.set(newValue, forKey: "dictation.pasteLastKey") }
+    }
+    /// Letter for ⌃⌥<letter> that copies the last dictation.
+    public static var copyLastKey: String {
+        get { d.string(forKey: "dictation.copyLastKey") ?? "c" }
+        set { d.set(newValue, forKey: "dictation.copyLastKey") }
+    }
+}
+
+/// Physical key codes for ⌃⌥<letter> shortcuts. Positions, not characters, so they work the same
+/// with the Arabic layout active.
+public enum DictationKeys {
+    public static let letters: [String: Int] = [
+        "a": kVK_ANSI_A, "b": kVK_ANSI_B, "c": kVK_ANSI_C, "d": kVK_ANSI_D, "e": kVK_ANSI_E, "f": kVK_ANSI_F, "g": kVK_ANSI_G,
+        "h": kVK_ANSI_H, "i": kVK_ANSI_I, "j": kVK_ANSI_J, "k": kVK_ANSI_K, "l": kVK_ANSI_L, "m": kVK_ANSI_M, "n": kVK_ANSI_N,
+        "o": kVK_ANSI_O, "p": kVK_ANSI_P, "q": kVK_ANSI_Q, "r": kVK_ANSI_R, "s": kVK_ANSI_S, "t": kVK_ANSI_T, "u": kVK_ANSI_U,
+        "v": kVK_ANSI_V, "w": kVK_ANSI_W, "x": kVK_ANSI_X, "y": kVK_ANSI_Y,
+    ]
+    public static func code(for letter: String) -> Int? { letters[letter.lowercased()] }
+}
+
+/// The most recent dictation, for paste-last and copy-last. Kept for 24 hours, in memory.
+public enum LastDictation {
+    public static let lifetime: TimeInterval = 24 * 3600
+    private static var stored: (text: String, at: Date)?
+
+    public static func record(_ text: String, at date: Date = Date()) { stored = (text, date) }
+    public static var text: String? {
+        guard let s = stored, Date().timeIntervalSince(s.at) < lifetime else { return nil }
+        return s.text
     }
 }
 

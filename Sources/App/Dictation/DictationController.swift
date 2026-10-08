@@ -27,6 +27,7 @@ final class DictationController {
         state.autoPaste = DictationPrefs.autoPaste
         state.sounds = DictationPrefs.sounds
         state.totalWords = DictationPrefs.totalWords
+        applyShortcutKeys()
         DebugLog.write("dictation: ax=\(Permissions.accessibility) whisper=\(DictationPaths.whisper ?? "nil") model=\(DictationPaths.modelExists)")
         wireHotkey()
         state.onPauseToggle = { [weak self] in self?.togglePause() }
@@ -106,6 +107,8 @@ final class DictationController {
         hotkey.onDoubleTap = { [weak self] in self?.lockRecording() }
         hotkey.onPressEnd = { [weak self] in self?.releaseKey() }
         hotkey.onEscape = { [weak self] in self?.cancel() }
+        hotkey.onPasteLast = { [weak self] in self?.pasteLast() }
+        hotkey.onCopyLast = { [weak self] in self?.copyLast() }
         hotkey.onCycleLang = { [weak self] in
             guard let self else { return }
             self.state.cycleLang()
@@ -190,6 +193,7 @@ final class DictationController {
             guard let self else { return }
             switch result {
             case .success(let text):
+                LastDictation.record(text)
                 let pasted = Inserter.deliver(text)
                 DictationPrefs.totalWords += text.split(whereSeparator: { $0 == " " || $0 == "\n" }).count
                 self.state.totalWords = DictationPrefs.totalWords
@@ -202,6 +206,27 @@ final class DictationController {
                 self.fail(err)
             }
         }
+    }
+
+    // MARK: Paste last, copy last
+
+    private func pasteLast() {
+        guard !state.isBusy else { return }
+        guard let text = LastDictation.text else { return flash(.warning("No dictation in the last 24 hours"), for: 1.6) }
+        let pasted = Inserter.deliver(text, force: true)
+        flash(.warning(pasted ? "Pasted the last dictation" : "No text field here · copied instead"), for: 1.4)
+    }
+
+    private func copyLast() {
+        guard !state.isBusy else { return }
+        guard let text = LastDictation.text else { return flash(.warning("No dictation in the last 24 hours"), for: 1.6) }
+        ClipboardSession.shared.put(text, restore: false)
+        flash(.warning("Copied the last dictation"), for: 1.4)
+    }
+
+    private func applyShortcutKeys() {
+        hotkey.pasteLastCode = DictationKeys.code(for: state.pasteLastKey)
+        hotkey.copyLastCode = DictationKeys.code(for: state.copyLastKey)
     }
 
     // MARK: Feedback
@@ -231,4 +256,6 @@ final class DictationController {
     func setLang(_ l: Lang) { state.lang = l; DictationPrefs.lang = l }
     func setAutoPaste(_ on: Bool) { DictationPrefs.autoPaste = on; state.autoPaste = on }
     func setSounds(_ on: Bool) { DictationPrefs.sounds = on; state.sounds = on }
+    func setPasteLastKey(_ k: String) { DictationPrefs.pasteLastKey = k; state.pasteLastKey = k; applyShortcutKeys() }
+    func setCopyLastKey(_ k: String) { DictationPrefs.copyLastKey = k; state.copyLastKey = k; applyShortcutKeys() }
 }
