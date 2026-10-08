@@ -22,6 +22,8 @@ import SQLite3
 //     way Deck does, and prints release-to-text, the pieces and the joined text as JSON.
 // murmur cuts <file.wav>
 //     Where PauseChunker cuts the file, and each piece transcribed alone, with and without the prompt.
+// murmur check-paste-verdict
+//     DEL-03's decision from the field before and after a paste, on edge cases.
 // murmur check-language
 //     The AUTO language policy on probe results measured on the synthetic set.
 // murmur check-gestures
@@ -209,6 +211,26 @@ case "cuts":
     } catch { print("ERROR \(error)") }
     WhisperEngine.shared.shutdown()
     exit(0)
+
+case "check-paste-verdict":
+    var ok = true
+    func expect(_ name: String, _ before: String?, _ after: String?, _ text: String, _ v: PasteVerdict) {
+        let got = PasteCheck.verdict(before: before, after: after, inserted: text)
+        print("\(got == v ? "PASS" : "FAIL")  \(name)\(got == v ? "" : "  (got \(got))")"); ok = ok && got == v
+    }
+    let t = "Move the HubSpot sync to Friday."
+    expect("empty field now holds the text", "", t, t, .landed)
+    expect("text added at the end", "Hi Sarah,\n", "Hi Sarah,\n" + t, t, .landed)
+    expect("text replaced a selection", "Hi Sarah, PLACEHOLDER thanks", "Hi Sarah, \(t) thanks", t, .landed)
+    expect("Arabic text added", "", "كلم العميل وقوله إننا محتاجين يومين", "كلم العميل وقوله إننا محتاجين يومين", .landed)
+    expect("app reformatted the text but it is longer", "a", "a • move the hubspot sync to friday", t, .landed)
+    expect("field unchanged: the paste didn't land", "Hi Sarah,", "Hi Sarah,", t, .failed)
+    expect("field unreadable before: no alarm", nil, "anything", t, .unknown)
+    expect("field unreadable after: no alarm", "Hi", nil, t, .unknown)
+    expect("field changed some other way: no alarm", "Hello world", "Hello", t, .unknown)
+    expect("huge document: not compared", String(repeating: "x", count: 200_000), String(repeating: "x", count: 200_000), t, .unknown)
+    print(ok ? "all paste-verdict checks passed" : "paste-verdict checks FAILED")
+    exit(ok ? 0 : 1)
 
 case "check-language":
     var ok = true

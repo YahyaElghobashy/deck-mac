@@ -312,7 +312,7 @@ final class DictationController {
         let releaseMs = Int(Date().timeIntervalSince(releasedAt) * 1000)
         let app = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
         LastDictation.record(text)
-        let pasted = Inserter.deliver(text)
+        let pasted = Inserter.deliver(text) { [weak self] verdict in self?.pasteChecked(verdict, text: text) }
         let method = Inserter.lastMethod.rawValue
         DebugLog.write("dictation \(t.language) via \(t.engine), \(pieces) piece(s), text \(releaseMs) ms after release, delivered via \(method)")
         save(DictationRecord(text: text, lang: t.language, engine: t.engine, delivery: method,
@@ -367,6 +367,15 @@ final class DictationController {
 
     func metricSummaries() -> [Store.MetricSummary] { (try? store?.metricSummaries()) ?? [] }
     func clearMetrics() { try? store?.clearMetrics() }
+
+    /// DEL-03: a paste that provably didn't arrive leaves the text on the clipboard and says so.
+    private func pasteChecked(_ verdict: PasteVerdict, text: String) {
+        metric("paste_check.\(verdict.rawValue)")
+        guard verdict == .failed else { return }
+        ClipboardSession.shared.put(text, restore: false)
+        DebugLog.write("paste did not land; left on the clipboard")
+        flash(.warning("Copied, press ⌘V"), for: 2.5)
+    }
 
     // MARK: Paste last, copy last
 
