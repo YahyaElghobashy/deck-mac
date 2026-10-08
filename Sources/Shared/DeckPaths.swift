@@ -16,6 +16,8 @@ enum DeckPaths {
     static var actions: URL { dir.appendingPathComponent("actions.json") }
     static var appSettings: URL { dir.appendingPathComponent("app-settings.json") }
     static var trace: URL { dir.appendingPathComponent("deck-trace.log") }
+    /// Dictations, notes, meetings and their search index (Murmur's Store).
+    static var database: URL { dir.appendingPathComponent("deck.sqlite") }
 
     static let bridgePort = 47831
     static let urlScheme = "deck"

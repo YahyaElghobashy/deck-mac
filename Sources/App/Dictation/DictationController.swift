@@ -17,6 +17,7 @@ final class DictationController {
     private var watchdog: Timer?
     private var bag = Set<AnyCancellable>()
     private var recordingStart: Date?
+    private var store: Store?
 
     private init() {}
 
@@ -28,6 +29,7 @@ final class DictationController {
         state.sounds = DictationPrefs.sounds
         state.totalWords = DictationPrefs.totalWords
         applyShortcutKeys()
+        openStore()
         DebugLog.write("dictation: ax=\(Permissions.accessibility) whisper=\(DictationPaths.whisper ?? "nil") model=\(DictationPaths.modelExists)")
         wireHotkey()
         state.onPauseToggle = { [weak self] in self?.togglePause() }
@@ -189,13 +191,19 @@ final class DictationController {
         if !heardSound { try? FileManager.default.removeItem(at: url); return flash(.warning("Nothing heard"), for: 1.6) }
         state.phase = .transcribing
         hud.show()
-        Transcriber.run(wav: url, lang: state.lang) { [weak self] result in
+        let lang = state.lang
+        let transcribeStart = Date()
+        Transcriber.run(wav: url, lang: lang) { [weak self] result in
             guard let self else { return }
             switch result {
             case .success(let text):
+                let transcribeMs = Int(Date().timeIntervalSince(transcribeStart) * 1000)
+                let app = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
                 LastDictation.record(text)
                 let pasted = Inserter.deliver(text)
-                DebugLog.write("dictation delivered via \(Inserter.lastMethod.rawValue)")
+                DebugLog.write("dictation delivered via \(Inserter.lastMethod.rawValue) in \(transcribeMs) ms")
+                self.save(DictationRecord(text: text, lang: lang.rawValue, engine: "whisper-cli", delivery: Inserter.lastMethod.rawValue,
+                                          appBundleID: app, audioSeconds: secs, transcribeMs: transcribeMs))
                 DictationPrefs.totalWords += text.split(whereSeparator: { $0 == " " || $0 == "\n" }).count
                 self.state.totalWords = DictationPrefs.totalWords
                 self.state.phase = .done(text: text, pasted: pasted)
@@ -207,6 +215,23 @@ final class DictationController {
                 self.fail(err)
             }
         }
+    }
+
+    // MARK: Storage
+
+    private func openStore() {
+        do {
+            let s = try Store(url: DeckPaths.database)
+            store = s
+            if let last = try s.latestDictation() { LastDictation.record(last.text, at: last.at) }
+            DebugLog.write("store open, schema v\(s.schemaVersion), \(try s.dictationCount()) dictations")
+        } catch {
+            DebugLog.write("store unavailable: \(error)")
+        }
+    }
+
+    private func save(_ record: DictationRecord) {
+        do { try store?.addDictation(record) } catch { DebugLog.write("store write failed: \(error)") }
     }
 
     // MARK: Paste last, copy last

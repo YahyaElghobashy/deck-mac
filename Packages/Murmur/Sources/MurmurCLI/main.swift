@@ -10,6 +10,8 @@ import Murmur
 //     Exercises clipboard restore on a private pasteboard (never the user's clipboard).
 // murmur check-last
 //     Checks the 24-hour window for paste-last and copy-last, and the shortcut key codes.
+// murmur check-store
+//     Creates, migrates, fills, searches and reopens a throwaway database in a temp folder.
 // murmur check-paste
 //     Shows which key ⌘V uses on each enabled keyboard layout. Read-only: no layout is switched.
 
@@ -60,6 +62,9 @@ case "check-paste":
     }
     exit(0)
 
+case "check-store":
+    exit(StoreCheck.run() ? 0 : 1)
+
 case "check-last":
     var ok = true
     func check(_ name: String, _ pass: Bool) { print("\(pass ? "PASS" : "FAIL")  \(name)"); ok = ok && pass }
@@ -77,6 +82,44 @@ case "check-last":
 
 default:
     fail("usage: murmur transcribe <file.wav> … | murmur check-clipboard | murmur check-last", code: 64)
+}
+
+enum StoreCheck {
+    static func run() -> Bool {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("murmur-store-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("deck.sqlite")
+        var ok = true
+        func check(_ name: String, _ pass: Bool, _ detail: String = "") {
+            print("\(pass ? "PASS" : "FAIL")  \(name)\(detail.isEmpty ? "" : "  (\(detail))")"); ok = ok && pass
+        }
+        do {
+            let store = try Store(url: url)
+            check("a new database migrates to the latest schema", store.schemaVersion == Store.migrations.count, "version \(store.schemaVersion)")
+            let now = Date()
+            try store.addDictation(DictationRecord(text: "Move the HubSpot sync to Friday", lang: "en", engine: "whisper-cli",
+                                                   delivery: "keystroke", appBundleID: "com.apple.mail", audioSeconds: 3.2, transcribeMs: 840,
+                                                   createdAt: now.addingTimeInterval(-60)))
+            try store.addDictation(DictationRecord(text: "كلم العميل وقوله إننا محتاجين يومين زيادة", lang: "ar", engine: "whisper-cli",
+                                                   delivery: "clipboard", appBundleID: nil, audioSeconds: 4.1, transcribeMs: 910, createdAt: now))
+            check("dictations are saved", try store.dictationCount() == 2)
+            check("the latest dictation is the newest one", try store.latestDictation()?.text.hasPrefix("كلم") == true)
+            let en = try store.search("hubspot")
+            check("full-text search finds English", en.first?.kind == "dictation" && en.first?.snippet.contains("[HubSpot]") == true, en.first?.snippet ?? "no hit")
+            let ar = try store.search("العميل")
+            check("full-text search finds Arabic", ar.count == 1, ar.first?.snippet ?? "no hit")
+            check("the last word matches as a prefix", try store.search("hub").count == 1)
+            check("an empty query returns nothing", try store.search("   ").isEmpty)
+            try store.setSetting("theme", "dark"); try store.setSetting("theme", "light")
+            check("settings upsert", try store.setting("theme") == "light")
+        } catch { check("store operations", false, "\(error)") }
+        do {
+            let reopened = try Store(url: url)
+            check("reopening keeps the data and the schema", try reopened.dictationCount() == 2 && reopened.schemaVersion == Store.migrations.count)
+        } catch { check("reopen", false, "\(error)") }
+        print(ok ? "all store checks passed" : "store checks FAILED")
+        return ok
+    }
 }
 
 enum ClipboardCheck {
