@@ -115,6 +115,9 @@ only, with a token file that never leaves the machine.
 
 - **Dictation is 100% local.** Audio is written to a temp file, transcribed by whisper.cpp on your
   Mac, and deleted on every code path. No network at all.
+- **The text you dictate stays on your Mac too.** It's kept in a local database
+  (`~/Library/Application Support/Deck/deck.sqlite`) so ⌃⌥V can paste your last dictation again
+  and, later, so you can search what you said. It never leaves the machine.
 - **Alexa is Alexa.** Your words become text on-device, and that text goes to Amazon, because
   that's where Alexa lives. Same endpoints the official Alexa app uses. Deck adds no telemetry,
   no analytics, no accounts, and nothing of yours goes anywhere else.
@@ -123,6 +126,7 @@ only, with a token file that never leaves the machine.
 ## Build it yourself
 
 ```bash
+brew install cmake          # once: the first build compiles whisper.cpp from a pinned release
 cd bridge && npm install && cd ..
 ./build.sh --install
 ```
