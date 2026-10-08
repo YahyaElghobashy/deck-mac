@@ -17,11 +17,20 @@ public final class WhisperEngine {
         public let audioContext: Int
     }
 
-    /// Seconds of idleness before the model is freed; 0 keeps it loaded until quit.
-    public var idleUnload: TimeInterval = 600
+    /// Seconds of idleness before the model is freed; 0 keeps it loaded until quit. Set from any
+    /// thread; read only on the engine's queue.
+    public var idleUnload: TimeInterval {
+        get { queue.sync { _idleUnload } }
+        set { queue.async { [self] in _idleUnload = newValue } }
+    }
+    private var _idleUnload: TimeInterval = 600
 
-    /// Called on the engine's queue after each model load, with how long it took.
-    public var onLoad: ((Int) -> Void)?
+    /// Called on the engine's queue after each model load, with how long it took. Set from any thread.
+    public var onLoad: ((Int) -> Void)? {
+        get { queue.sync { _onLoad } }
+        set { queue.async { [self] in _onLoad = newValue } }
+    }
+    private var _onLoad: ((Int) -> Void)?
 
     private let queue = DispatchQueue(label: "murmur.whisper", qos: .userInitiated)
     private var ctx: OpaquePointer?
@@ -158,16 +167,16 @@ public final class WhisperEngine {
         ctx = c
         loadedPath = path
         let ms = Int(Date().timeIntervalSince(started) * 1000)
-        onLoad?(ms)
+        _onLoad?(ms)
         return ms
     }
 
     private func scheduleUnload() {
         unloadWork?.cancel(); unloadWork = nil
-        guard idleUnload > 0 else { return }
+        guard _idleUnload > 0 else { return }
         let work = DispatchWorkItem { [weak self] in self?.free() }
         unloadWork = work
-        queue.asyncAfter(deadline: .now() + idleUnload, execute: work)
+        queue.asyncAfter(deadline: .now() + _idleUnload, execute: work)
     }
 
     private func free() {
