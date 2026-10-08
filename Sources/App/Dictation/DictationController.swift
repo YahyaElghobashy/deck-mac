@@ -31,6 +31,7 @@ final class DictationController {
         applyShortcutKeys()
         WhisperEngine.shared.idleUnload = TimeInterval(state.keepModelMinutes * 60)
         openStore()
+        warmIfNewBuild()
         DebugLog.write("dictation: ax=\(Permissions.accessibility) whisper=\(DictationPaths.whisper ?? "nil") model=\(DictationPaths.modelExists)")
         wireHotkey()
         state.onPauseToggle = { [weak self] in self?.togglePause() }
@@ -221,6 +222,19 @@ final class DictationController {
             case .failure(let err):
                 self.fail(err)
             }
+        }
+    }
+
+    /// A new build of the app compiles whisper's Metal shaders on its first model load, which takes
+    /// about 9 s instead of 2.5 s. Do that once, in the background shortly after launch, so the
+    /// first dictation after an update doesn't wait for it. The model then unloads as usual.
+    private func warmIfNewBuild() {
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? ""
+        guard !build.isEmpty, DictationPrefs.warmedBuild != build, DictationPaths.modelExists else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 20) {
+            WhisperEngine.shared.preload(model: DictationPaths.model)
+            DictationPrefs.warmedBuild = build
+            DebugLog.write("warming whisper for build \(build)")
         }
     }
 

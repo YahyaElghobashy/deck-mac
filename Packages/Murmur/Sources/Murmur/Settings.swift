@@ -84,6 +84,11 @@ public enum DictationPrefs {
         get { d.object(forKey: "dictation.keepModelMinutes") == nil ? 10 : d.integer(forKey: "dictation.keepModelMinutes") }
         set { d.set(newValue, forKey: "dictation.keepModelMinutes") }
     }
+    /// The app build whose Metal shaders have been compiled for the model (see `warmIfNewBuild`).
+    public static var warmedBuild: String {
+        get { d.string(forKey: "dictation.warmedBuild") ?? "" }
+        set { d.set(newValue, forKey: "dictation.warmedBuild") }
+    }
     /// Letter for ⌃⌥<letter> that pastes the last dictation again.
     public static var pasteLastKey: String {
         get { d.string(forKey: "dictation.pasteLastKey") ?? "v" }
