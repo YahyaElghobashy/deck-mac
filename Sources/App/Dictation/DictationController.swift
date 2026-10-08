@@ -20,12 +20,9 @@ final class DictationController {
     private var store: Store?
     private var gesture = ChordGesture()
     private var gestureTimer: Timer?
-    /// The language heard in the first seconds of the current recording (AUTO only), and the work
-    /// that produces it. Bumping `session` makes a late result from an older recording harmless.
-    private var languageProbe: [String: Float]?
-    private var probeGroup = DispatchGroup()
-    private var probeTimer: Timer?
-    private var session = 0
+    /// Transcribes the current recording in pieces while it goes on (DIC-02), fed every 250 ms.
+    private var stream: StreamingTranscriber?
+    private var feedTimer: Timer?
 
     private init() {}
 
@@ -146,7 +143,7 @@ final class DictationController {
         guard AVCaptureDevice.authorizationStatus(for: .audio) != .denied else { return fail(VoiceError.micDenied) }
         do { try recorder.start() } catch { return fail(error) }
         WhisperEngine.shared.preload(model: DictationPaths.model)   // loads while you talk
-        scheduleLanguageProbe()
+        startStream()
         recordingStart = Date()
         state.level = 0
         state.elapsed = 0
@@ -177,38 +174,27 @@ final class DictationController {
         }
     }
 
-    // MARK: Language probe (AUTO)
+    // MARK: Transcribing while you talk
 
-    /// About two seconds in, ask whisper which language this is, in the background, while the user
-    /// keeps talking. LanguagePolicy turns the answer into the language token and prompt.
-    private func scheduleLanguageProbe() {
-        session += 1
-        languageProbe = nil
-        probeTimer?.invalidate(); probeTimer = nil
-        guard state.lang == .auto else { return }
-        let mine = session
-        probeTimer = Timer.scheduledTimer(withTimeInterval: LanguagePolicy.probeSeconds, repeats: false) { [weak self] _ in
+    /// A fresh StreamingTranscriber per recording: it cuts at pauses, probes the language (AUTO)
+    /// and transcribes each piece in the background, so only the tail is left at release.
+    private func startStream() {
+        stopStream()
+        let s = StreamingTranscriber(lang: state.lang, model: DictationPaths.model)
+        s.onEvent = { [weak self] kind, ms, detail in self?.metric(kind == "piece" ? "piece.whisper" : kind, ms: ms, detail: detail) }
+        stream = s
+        feedTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                guard let self, self.session == mine, case .recording = self.state.phase else { return }
-                let head = self.recorder.snapshot()
-                guard head.count >= Int(LanguagePolicy.probeSeconds * 16_000 * 0.8) else { return }
-                let model = DictationPaths.model
-                self.probeGroup.enter()
-                DispatchQueue.global(qos: .userInitiated).async {
-                    let started = Date()
-                    let probe = try? WhisperEngine.shared.detectLanguage(head, model: model)
-                    let ms = Int(Date().timeIntervalSince(started) * 1000)
-                    DispatchQueue.main.async {
-                        if self.session == mine {
-                            self.languageProbe = probe
-                            let top = probe?.max { $0.value < $1.value }
-                            self.metric("language_probe", ms: ms, detail: top.map { "\($0.key) \(Int($0.value * 100))%" })
-                        }
-                        self.probeGroup.leave()
-                    }
-                }
+                guard let self, let stream = self.stream, case .recording(_, false) = self.state.phase else { return }
+                stream.feed(self.recorder.snapshot())
             }
         }
+    }
+
+    private func stopStream() {
+        feedTimer?.invalidate(); feedTimer = nil
+        stream?.cancel()
+        stream = nil
     }
 
     // MARK: Hold, tap, double-tap
@@ -244,7 +230,7 @@ final class DictationController {
 
     /// Drops the current recording without a sound or a message (a lone tap).
     private func discardQuietly() {
-        probeTimer?.invalidate(); probeTimer = nil; session += 1
+        stopStream()
         ticker?.invalidate(); ticker = nil
         recordingStart = nil
         recorder.discard()
@@ -264,7 +250,7 @@ final class DictationController {
     private func cancel() {
         guard state.isBusy else { return }
         gesture.reset(); gestureTimer?.invalidate(); gestureTimer = nil
-        probeTimer?.invalidate(); probeTimer = nil; session += 1
+        stopStream()
         hud.setInteractive(false)
         ticker?.invalidate(); ticker = nil
         recordingStart = nil
@@ -279,53 +265,69 @@ final class DictationController {
         let releasedAt = Date()
         if recorder.isPaused { recorder.resume() }
         ticker?.invalidate(); ticker = nil
+        feedTimer?.invalidate(); feedTimer = nil
         recordingStart = nil
         let heardSound = recorder.sawSound
         let (url, secs) = recorder.stop()
+        let samples = recorder.snapshot()
         DictationSound.stop()
-        guard let url else { return fail(VoiceError.engineFailed("no audio captured")) }
-        if secs < DictationLimits.minRecordSeconds { try? FileManager.default.removeItem(at: url); return flash(.warning("Too short, ignored"), for: 1.3) }
-        if !heardSound { try? FileManager.default.removeItem(at: url); return flash(.warning("Nothing heard"), for: 1.6) }
+        guard let url else { stopStream(); return fail(VoiceError.engineFailed("no audio captured")) }
+        if secs < DictationLimits.minRecordSeconds { stopStream(); try? FileManager.default.removeItem(at: url); return flash(.warning("Too short, ignored"), for: 1.3) }
+        if !heardSound { stopStream(); try? FileManager.default.removeItem(at: url); return flash(.warning("Nothing heard"), for: 1.6) }
         state.phase = .transcribing
         hud.show()
         let lang = state.lang
-        probeTimer?.invalidate(); probeTimer = nil
-        // A probe still running finishes first; it shares the engine's queue, so waiting costs nothing.
-        probeGroup.notify(queue: .main) { [weak self] in
-            guard let self else { return }
-            self.transcribe(url: url, lang: lang, seconds: secs, releasedAt: releasedAt, probe: self.languageProbe)
-        }
-    }
-
-    private func transcribe(url: URL, lang: Lang, seconds secs: TimeInterval, releasedAt: Date, probe: [String: Float]?) {
-        Transcriber.run(wav: url, lang: lang, probe: probe) { [weak self] result in
+        guard let stream else { return transcribeWholeFile(url, lang: lang, seconds: secs, releasedAt: releasedAt) }
+        self.stream = nil
+        stream.finish(samples) { [weak self] result in
             guard let self else { return }
             switch result {
             case .success(let t):
-                let text = t.text
-                let releaseMs = Int(Date().timeIntervalSince(releasedAt) * 1000)
-                let app = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-                LastDictation.record(text)
-                let pasted = Inserter.deliver(text)
-                let method = Inserter.lastMethod.rawValue
-                DebugLog.write("dictation \(t.language) via \(t.engine), text \(releaseMs) ms after release, delivered via \(method)")
-                self.save(DictationRecord(text: text, lang: t.language, engine: t.engine, delivery: method,
-                                          appBundleID: app, audioSeconds: secs, transcribeMs: t.inferMs))
-                self.metric("release_to_text.\(t.engine)", ms: releaseMs, detail: String(format: "%.1fs %@", t.audioSeconds, t.language))
-                self.metric("transcribe.\(t.engine)", ms: t.inferMs)
-                if t.engine != "whisper" { self.metric("fallback.\(t.engine)") }
-                self.metric("delivery.\(method)")
-                DictationPrefs.totalWords += text.split(whereSeparator: { $0 == " " || $0 == "\n" }).count
-                self.state.totalWords = DictationPrefs.totalWords
-                self.state.phase = .done(text: text, pasted: pasted)
-                DictationSound.ok()
-                self.hud.show()
-                self.hud.hide(after: 2.2)
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { if case .done = self.state.phase { self.state.phase = .idle } }
-            case .failure(let err):
-                self.fail(err)
+                try? FileManager.default.removeItem(at: url)   // the audio goes on every path
+                self.deliver(t, seconds: secs, releasedAt: releasedAt, pieces: stream.piecesSoFar + 1)
+            case .failure(VoiceError.empty):
+                try? FileManager.default.removeItem(at: url)
+                self.fail(VoiceError.empty)
+            case .failure(let error):
+                // The in-process engine failed mid-way: do the whole file again, with the CLI fallback.
+                DebugLog.write("streaming failed (\(error)); transcribing the whole recording")
+                self.transcribeWholeFile(url, lang: lang, seconds: secs, releasedAt: releasedAt)
             }
         }
+    }
+
+    /// The whole recording in one go, falling back to whisper-cli when the engine can't run.
+    private func transcribeWholeFile(_ url: URL, lang: Lang, seconds secs: TimeInterval, releasedAt: Date) {
+        Transcriber.run(wav: url, lang: lang) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let t): self.deliver(t, seconds: secs, releasedAt: releasedAt, pieces: 1)
+            case .failure(let err): self.fail(err)
+            }
+        }
+    }
+
+    private func deliver(_ t: Transcript, seconds secs: TimeInterval, releasedAt: Date, pieces: Int) {
+        let text = t.text
+        let releaseMs = Int(Date().timeIntervalSince(releasedAt) * 1000)
+        let app = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        LastDictation.record(text)
+        let pasted = Inserter.deliver(text)
+        let method = Inserter.lastMethod.rawValue
+        DebugLog.write("dictation \(t.language) via \(t.engine), \(pieces) piece(s), text \(releaseMs) ms after release, delivered via \(method)")
+        save(DictationRecord(text: text, lang: t.language, engine: t.engine, delivery: method,
+                             appBundleID: app, audioSeconds: secs, transcribeMs: t.inferMs))
+        metric("release_to_text.\(t.engine)", ms: releaseMs, detail: String(format: "%.1fs %@ %d piece(s)", t.audioSeconds, t.language, pieces))
+        metric("transcribe.\(t.engine)", ms: t.inferMs)
+        if t.engine != "whisper" { metric("fallback.\(t.engine)") }
+        metric("delivery.\(method)")
+        DictationPrefs.totalWords += text.split(whereSeparator: { $0 == " " || $0 == "\n" }).count
+        state.totalWords = DictationPrefs.totalWords
+        state.phase = .done(text: text, pasted: pasted)
+        DictationSound.ok()
+        hud.show()
+        hud.hide(after: 2.2)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { if case .done = self.state.phase { self.state.phase = .idle } }
     }
 
     /// A new build of the app compiles whisper's Metal shaders on its first model load, which takes

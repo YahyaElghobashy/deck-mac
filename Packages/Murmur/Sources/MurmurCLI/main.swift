@@ -17,6 +17,11 @@ import SQLite3
 //     Checks the 24-hour window for paste-last and copy-last, and the shortcut key codes.
 // murmur check-store
 //     Creates, migrates, fills, searches and reopens a throwaway database in a temp folder.
+// murmur stream <file.wav> [--speed 1] [--lang auto|en|ar]
+//     Replays a file as a live recording (audio grows every 250 ms), transcribing at pauses the
+//     way Deck does, and prints release-to-text, the pieces and the joined text as JSON.
+// murmur cuts <file.wav>
+//     Where PauseChunker cuts the file, and each piece transcribed alone, with and without the prompt.
 // murmur check-language
 //     The AUTO language policy on probe results measured on the synthetic set.
 // murmur check-gestures
@@ -150,6 +155,60 @@ case "check-paste":
 
 case "check-store":
     exit(StoreCheck.run() ? 0 : 1)
+
+case "stream":
+    guard args.count >= 2 else { fail("usage: murmur stream <file.wav> [--speed 1] [--lang auto|en|ar]", code: 64) }
+    let speed = Double(value("--speed") ?? "1") ?? 1
+    let lang = Lang(rawValue: value("--lang") ?? "auto") ?? .auto
+    do {
+        let all = try WavReader.samples(URL(fileURLWithPath: args[1]))
+        WhisperEngine.shared.preload(model: DictationPaths.model)    // as on key press
+        _ = WhisperEngine.shared.isLoaded
+        let stream = StreamingTranscriber(lang: lang, model: DictationPaths.model)
+        var events: [String] = []
+        stream.onEvent = { kind, ms, detail in events.append("\(kind) \(ms) ms \(detail ?? "")") }
+        var fed = 0
+        while fed < all.count {
+            fed = min(all.count, fed + 4_000)
+            stream.feed(Array(all.prefix(fed)))
+            RunLoop.main.run(until: Date().addingTimeInterval(0.25 / speed))
+        }
+        let released = Date()
+        stream.finish(all) { result in
+            let ms = Int(Date().timeIntervalSince(released) * 1000)
+            var row: [String: Any] = ["file": args[1], "release_ms": ms, "pieces": stream.piecesSoFar + 1, "events": events,
+                                      "audio_seconds": Double(all.count) / 16_000]
+            switch result {
+            case .success(let t): row["text"] = t.text; row["language"] = t.language
+            case .failure(let e): row["error"] = "\(e)"
+            }
+            if let d = try? JSONSerialization.data(withJSONObject: row), let s = String(data: d, encoding: .utf8) { print(s) }
+            WhisperEngine.shared.shutdown()
+            exit(0)
+        }
+        RunLoop.main.run()
+    } catch { fail("ERROR \(error)", code: 1) }
+
+case "cuts":
+    do {
+        let all = try WavReader.samples(URL(fileURLWithPath: args[1]))
+        var chunker = PauseChunker()
+        var cuts: [Int] = []
+        var fed = 0
+        while fed < all.count { fed = min(all.count, fed + 4_000); cuts += chunker.feed(Array(all.prefix(fed))) }
+        let bounds = [0] + cuts + [all.count]
+        for i in 0..<(bounds.count - 1) {
+            let piece = Array(all[bounds[i]..<bounds[i + 1]])
+            let probe = try WhisperEngine.shared.detectLanguage(Array(piece.prefix(32_000)), model: DictationPaths.model)
+            let d = LanguagePolicy.decide(mode: .auto, probe: probe)
+            let with = try Transcriber.transcribe(piece, lang: .auto, probe: probe, prompt: SpeechPrompt.build(mixed: d.mixedPrompt))
+            let without = try Transcriber.transcribe(piece, lang: .auto, probe: probe, prompt: "")
+            print(String(format: "piece %d  %.2f–%.2f s  [%@]", i + 1, Double(bounds[i]) / 16_000, Double(bounds[i + 1]) / 16_000, d.code))
+            print("   prompt: \(with.text)\n   none:   \(without.text)")
+        }
+    } catch { print("ERROR \(error)") }
+    WhisperEngine.shared.shutdown()
+    exit(0)
 
 case "check-language":
     var ok = true

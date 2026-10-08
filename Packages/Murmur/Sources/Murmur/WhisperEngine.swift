@@ -77,6 +77,10 @@ public final class WhisperEngine {
             let seconds = Double(samples.count) / 16_000
             var p = whisper_full_default_params(WHISPER_SAMPLING_GREEDY)
             p.n_threads = Int32(threads)
+            // whisper.cpp otherwise carries the previous call's text into this one as hidden
+            // context: an English dictation followed by an Arabic one turned 14 s of Arabic into one
+            // invented word. Context is passed explicitly, through the prompt, when wanted.
+            p.no_context = true
             p.no_timestamps = true
             p.print_progress = false
             p.print_realtime = false
@@ -127,13 +131,13 @@ public final class WhisperEngine {
         }
     }
 
-    /// whisper encodes 50 frames per second of audio over a 1500-frame (30 s) window and is much
-    /// faster with a window sized to the dictation. 2 s of headroom, never below the 15 s window
-    /// that was measured (0.8 s for a 10 s clip on the M1 Pro), and the full window from 28 s.
+    /// whisper encodes 50 frames per second of audio over a 1500-frame (30 s) window, and a smaller
+    /// window is much faster: 0.8 s instead of 1.6 s for a 10 s clip on the M1 Pro. But the size
+    /// must not vary between calls on one context: after a 768-frame call, an 832-frame call turned
+    /// 14 s of Arabic into a single invented word (switching to the full window is safe both ways).
+    /// So there are exactly two sizes: 768 frames for audio up to about 13 s, the full window above.
     public static func audioContext(for seconds: Double) -> Int32 {
-        if seconds >= 28 { return 0 }
-        let frames = Int(((seconds + 2) * 50 / 64).rounded(.up)) * 64
-        return Int32(min(1500, max(768, frames)))
+        seconds + 2 <= 768.0 / 50 ? 768 : 0
     }
 
     // MARK: Model lifetime (queue only)
