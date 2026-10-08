@@ -39,12 +39,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        // Synchronously, before the process exits: a whisper model still in memory when ggml's
-        // Metal device is torn down at exit crashes the app on quit.
-        WhisperEngine.shared.shutdown()
-        Task { @MainActor in
+        // Everything here runs synchronously: the process exits as soon as this returns, so work
+        // scheduled in a Task never runs. That left the Node bridge running after every quit, and
+        // a whisper model still in memory when ggml's Metal device is torn down at exit crashes.
+        MainActor.assumeIsolated {
             BridgeSupervisor.shared.stop()
-            DictationController.shared.stop()
+            DictationController.shared.stop()   // frees the whisper model too
         }
     }
 
