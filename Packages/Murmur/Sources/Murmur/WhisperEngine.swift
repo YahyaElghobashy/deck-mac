@@ -25,6 +25,9 @@ public final class WhisperEngine {
 
     private let queue = DispatchQueue(label: "murmur.whisper", qos: .userInitiated)
     private var ctx: OpaquePointer?
+    /// A separate state for language detection. The context's own state keeps the audio window of
+    /// the last transcription, which changed the probe's answer; this one always listens the same way.
+    private var probeState: OpaquePointer?
     private var loadedPath: String?
     private var unloadWork: DispatchWorkItem?
 
@@ -100,6 +103,30 @@ public final class WhisperEngine {
         }
     }
 
+    /// Language probabilities for the start of `samples`, from whisper's own detector (one encoder
+    /// pass). Keys are whisper codes; languages under 1% are left out. Blocks the caller.
+    public func detectLanguage(_ samples: [Float], model: String, threads: Int = 8) throws -> [String: Float] {
+        try queue.sync {
+            _ = try ensureLoaded(model)
+            defer { scheduleUnload() }
+            if probeState == nil { probeState = whisper_init_state(ctx) }
+            guard let state = probeState else { throw VoiceError.transcribeFailed("language detection could not start") }
+            let melOK = samples.withUnsafeBufferPointer {
+                whisper_pcm_to_mel_with_state(ctx, state, $0.baseAddress, Int32($0.count), Int32(threads))
+            }
+            guard melOK == 0 else { throw VoiceError.transcribeFailed("language detection could not read the audio") }
+            var probs = [Float](repeating: 0, count: Int(whisper_lang_max_id()) + 1)
+            guard whisper_lang_auto_detect_with_state(ctx, state, 0, Int32(threads), &probs) >= 0 else {
+                throw VoiceError.transcribeFailed("language detection failed")
+            }
+            var out: [String: Float] = [:]
+            for (i, p) in probs.enumerated() where p > 0.01 {
+                if let code = whisper_lang_str(Int32(i)) { out[String(cString: code)] = p }
+            }
+            return out
+        }
+    }
+
     /// whisper encodes 50 frames per second of audio over a 1500-frame (30 s) window and is much
     /// faster with a window sized to the dictation. 2 s of headroom, never below the 15 s window
     /// that was measured (0.8 s for a 10 s clip on the M1 Pro), and the full window from 28 s.
@@ -141,6 +168,8 @@ public final class WhisperEngine {
 
     private func free() {
         unloadWork?.cancel(); unloadWork = nil
+        if let probeState { whisper_free_state(probeState) }
+        probeState = nil
         if let ctx { whisper_free(ctx) }
         ctx = nil
         loadedPath = nil

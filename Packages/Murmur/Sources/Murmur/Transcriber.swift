@@ -15,25 +15,25 @@ public struct Transcript {
 public enum Transcriber {
     /// Transcribes the wav with the in-process engine, falling back to whisper-cli if the engine
     /// cannot run. The audio is deleted before returning, on every path. Completes on the main thread.
-    public static func run(wav: URL, lang: Lang, completion: @escaping (Result<Transcript, Error>) -> Void) {
+    /// `probe` is the language detected while recording (see LanguagePolicy); `prompt` overrides
+    /// the default prompt, "" for none.
+    public static func run(wav: URL, lang: Lang, probe: [String: Float]? = nil, prompt: String? = nil,
+                           completion: @escaping (Result<Transcript, Error>) -> Void) {
+        let decision = LanguagePolicy.decide(mode: lang, probe: probe)
+        let prompt = prompt ?? SpeechPrompt.build(mixed: decision.mixedPrompt)
         DispatchQueue.global(qos: .userInitiated).async {
             let result: Result<Transcript, Error>
             do {
-                guard DictationPaths.modelExists else { throw VoiceError.modelMissing }
-                let samples = try WavReader.samples(wav)
-                let out = try WhisperEngine.shared.transcribe(samples, model: DictationPaths.model, language: lang.rawValue)
-                let text = clean(out.text)
-                result = text.isEmpty ? .failure(VoiceError.empty)
-                    : .success(Transcript(text: text, engine: "whisper", language: out.language, loadMs: out.loadMs,
-                                          inferMs: out.inferMs, audioSeconds: out.audioSeconds))
+                let t = try transcribe(try WavReader.samples(wav), lang: lang, probe: probe, prompt: prompt)
+                result = t.text.isEmpty ? .failure(VoiceError.empty) : .success(t)
             } catch VoiceError.modelMissing {
                 result = .failure(VoiceError.modelMissing)
             } catch {
                 NSLog("[murmur] in-process whisper failed (%@); using whisper-cli", "\(error)")
                 let started = Date()
                 let seconds = (try? WavReader.samples(wav).count).map { Double($0) / 16_000 } ?? 0
-                result = runCLI(wav: wav, lang: lang).map {
-                    Transcript(text: $0, engine: "whisper-cli", language: lang.rawValue, loadMs: 0,
+                result = runCLI(wav: wav, language: decision.code, prompt: prompt).map {
+                    Transcript(text: $0, engine: "whisper-cli", language: LanguagePolicy.spoken(probe: probe, decision: decision), loadMs: 0,
                                inferMs: Int(Date().timeIntervalSince(started) * 1000), audioSeconds: seconds)
                 }
             }
@@ -42,8 +42,22 @@ public enum Transcriber {
         }
     }
 
+    /// Deck's in-process path on samples already in memory: the engine, the clean-up, and the
+    /// prompt-echo guard. Blocks the caller. An empty `text` means no speech was found.
+    public static func transcribe(_ samples: [Float], lang: Lang, probe: [String: Float]? = nil, prompt: String? = nil) throws -> Transcript {
+        guard DictationPaths.modelExists else { throw VoiceError.modelMissing }
+        let decision = LanguagePolicy.decide(mode: lang, probe: probe)
+        let prompt = prompt ?? SpeechPrompt.build(mixed: decision.mixedPrompt)
+        let out = try WhisperEngine.shared.transcribe(samples, model: DictationPaths.model, language: decision.code,
+                                                      prompt: prompt.isEmpty ? nil : prompt)
+        var text = clean(out.text)
+        if SpeechPrompt.isEcho(text, of: prompt) { text = "" }
+        return Transcript(text: text, engine: "whisper", language: LanguagePolicy.spoken(probe: probe, decision: decision), loadMs: out.loadMs,
+                          inferMs: out.inferMs, audioSeconds: out.audioSeconds)
+    }
+
     /// The fallback: one whisper-cli process per dictation, which reloads the model every time.
-    static func runCLI(wav: URL, lang: Lang) -> Result<String, Error> {
+    static func runCLI(wav: URL, language: String, prompt: String) -> Result<String, Error> {
         let base = wav.deletingPathExtension().path
         let txt = URL(fileURLWithPath: base + ".txt")
         defer { try? FileManager.default.removeItem(at: txt) }
@@ -51,7 +65,8 @@ public enum Transcriber {
         guard DictationPaths.modelExists else { return .failure(VoiceError.modelMissing) }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: bin)
-        p.arguments = ["-m", DictationPaths.model, "-f", wav.path, "-l", lang.rawValue, "-t", "8", "-otxt", "-of", base]
+        p.arguments = ["-m", DictationPaths.model, "-f", wav.path, "-l", language, "-t", "8", "-otxt", "-of", base]
+            + (prompt.isEmpty ? [] : ["--prompt", prompt])
         let errPipe = Pipe()
         p.standardError = errPipe
         p.standardOutput = Pipe()

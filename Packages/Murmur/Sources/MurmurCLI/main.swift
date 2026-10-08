@@ -7,6 +7,8 @@ import SQLite3
 // murmur transcribe <file.wav> [--lang en|ar|auto] [--model path]
 //     Runs the exact transcription path Deck uses and prints the text and the time it took. The
 //     input is copied first, because the transcriber deletes its audio on every path.
+// murmur transcribe-many <file.wav>… [--lang auto|en|ar] [--prompt none|"text"]
+//     Deck's exact in-process path over many files with the model loaded once; one JSON line each.
 // murmur bench <file.wav>… [--runs N] [--lang auto|en|ar]
 //     Loads the model once, then times N in-process transcriptions per file (DIC-01).
 // murmur check-clipboard
@@ -15,6 +17,8 @@ import SQLite3
 //     Checks the 24-hour window for paste-last and copy-last, and the shortcut key codes.
 // murmur check-store
 //     Creates, migrates, fills, searches and reopens a throwaway database in a temp folder.
+// murmur check-language
+//     The AUTO language policy on probe results measured on the synthetic set.
 // murmur check-gestures
 //     Plays timed press/release sequences through ChordGesture: holds, taps, double-taps.
 // murmur check-paste
@@ -40,8 +44,10 @@ case "transcribe":
     do { try FileManager.default.copyItem(at: source, to: copy) } catch {
         fail("cannot read \(source.path): \(error.localizedDescription)", code: 66)
     }
+    let promptArg = value("--prompt")
+    let prompt: String? = promptArg == "none" ? "" : promptArg   // nil = Deck's default prompt
     let started = Date()
-    Transcriber.run(wav: copy, lang: lang) { result in
+    Transcriber.run(wav: copy, lang: lang, prompt: prompt) { result in
         let ms = Int(Date().timeIntervalSince(started) * 1000)
         WhisperEngine.shared.shutdown()
         switch result {
@@ -51,10 +57,53 @@ case "transcribe":
     }
     dispatchMain()
 
+case "probe":
+    // murmur probe <file.wav>… [--seconds 2.5]: language detection on the first seconds of each file.
+    let files = args.dropFirst().prefix { !$0.hasPrefix("--") }
+    let seconds = Double(value("--seconds") ?? "2.5") ?? 2.5
+    do {
+        for f in files {
+            let all = try WavReader.samples(URL(fileURLWithPath: f))
+            let head = Array(all.prefix(Int(seconds * 16_000)))
+            let t0 = Date()
+            let probs = try WhisperEngine.shared.detectLanguage(head, model: DictationPaths.model)
+            let ms = Int(Date().timeIntervalSince(t0) * 1000)
+            let top = probs.sorted { $0.value > $1.value }.prefix(3).map { "\($0.key) \(Int($0.value * 100))%" }.joined(separator: ", ")
+            print("\(URL(fileURLWithPath: f).lastPathComponent)\t\(ms) ms\t\(top)")
+        }
+    } catch { print("ERROR \(error)") }
+    WhisperEngine.shared.shutdown()
+    exit(0)
+
+case "transcribe-many":
+    let files = args.dropFirst().prefix { !$0.hasPrefix("--") }
+    let lang = Lang(rawValue: value("--lang") ?? "auto") ?? .auto
+    let promptArg = value("--prompt")
+    let prompt: String? = promptArg == "none" ? "" : promptArg      // nil = Deck's default
+    let useProbe = lang == .auto && !args.contains("--no-probe")
+    for f in files {
+        var row: [String: Any] = ["file": f]
+        do {
+            let samples = try WavReader.samples(URL(fileURLWithPath: f))
+            // Like the app: detect the language on the first seconds, if the dictation is long enough.
+            let head = Int(LanguagePolicy.probeSeconds * 16_000)
+            let probe = useProbe && samples.count > head
+                ? try WhisperEngine.shared.detectLanguage(Array(samples.prefix(head)), model: DictationPaths.model) : nil
+            let t = try Transcriber.transcribe(samples, lang: lang, probe: probe, prompt: prompt)
+            row["decoded_as"] = LanguagePolicy.decide(mode: lang, probe: probe).code
+            row["text"] = t.text; row["language"] = t.language; row["infer_ms"] = t.inferMs; row["audio_seconds"] = t.audioSeconds
+        } catch { row["error"] = "\(error)" }
+        if let d = try? JSONSerialization.data(withJSONObject: row), let s = String(data: d, encoding: .utf8) { print(s) }
+    }
+    WhisperEngine.shared.shutdown()
+    exit(0)
+
 case "bench":
     let files = args.dropFirst().prefix { !$0.hasPrefix("--") }
     let runs = Int(value("--runs") ?? "10") ?? 10
     let lang = value("--lang") ?? "auto"
+    let promptArg = value("--prompt")
+    let prompt: String? = promptArg == "none" ? nil : (promptArg ?? SpeechPrompt.build(lang: Lang(rawValue: lang) ?? .auto))
     guard !files.isEmpty else { fail("usage: murmur bench <file.wav>… [--runs N] [--lang auto|en|ar]", code: 64) }
     do {
         let first = try WavReader.samples(URL(fileURLWithPath: files.first!))
@@ -62,14 +111,14 @@ case "bench":
         WhisperEngine.shared.preload(model: DictationPaths.model)   // what Deck does on ⌃⌥Z
         _ = WhisperEngine.shared.isLoaded                            // waits for the load and warm-up
         let preloadMs = Int(Date().timeIntervalSince(t0) * 1000)
-        let cold = try WhisperEngine.shared.transcribe(first, model: DictationPaths.model, language: lang)
+        let cold = try WhisperEngine.shared.transcribe(first, model: DictationPaths.model, language: lang, prompt: prompt)
         print("preload (load + warm-up) \(preloadMs) ms, first transcription after it \(cold.inferMs) ms")
         for f in files {
             let samples = try WavReader.samples(URL(fileURLWithPath: f))
             var times: [Int] = []
             var last: WhisperEngine.Output?
             for _ in 0..<runs {
-                let out = try WhisperEngine.shared.transcribe(samples, model: DictationPaths.model, language: lang)
+                let out = try WhisperEngine.shared.transcribe(samples, model: DictationPaths.model, language: lang, prompt: prompt)
                 times.append(out.inferMs); last = out
             }
             times.sort()
@@ -101,6 +150,28 @@ case "check-paste":
 
 case "check-store":
     exit(StoreCheck.run() ? 0 : 1)
+
+case "check-language":
+    var ok = true
+    func expect(_ name: String, _ mode: Lang, _ probe: [String: Float]?, _ code: String, mixed: Bool) {
+        let d = LanguagePolicy.decide(mode: mode, probe: probe)
+        let pass = d.code == code && d.mixedPrompt == mixed
+        print("\(pass ? "PASS" : "FAIL")  \(name)\(pass ? "" : "  (got \(d.code), mixed \(d.mixedPrompt))")"); ok = ok && pass
+    }
+    expect("pure English (en 99%) decodes as English", .auto, ["en": 0.99], "en", mixed: false)
+    expect("pure Arabic (ar 97%) decodes as Arabic with the mixed prompt", .auto, ["ar": 0.97, "en": 0.01], "ar", mixed: true)
+    expect("mixed, Arabic-led (ar 48%, en 46%)", .auto, ["ar": 0.48, "en": 0.46], "ar", mixed: true)
+    expect("mixed, English-led (en 77%, ar 17%) stays on the Arabic route", .auto, ["en": 0.77, "ar": 0.17], "ar", mixed: true)
+    expect("French (fr 99%) decodes as French", .auto, ["fr": 0.99], "fr", mixed: false)
+    expect("German (de 99%) decodes as German", .auto, ["de": 0.99], "de", mixed: false)
+    expect("too short to probe: English and Arabic route", .auto, nil, "ar", mixed: true)
+    expect("EN mode ignores the probe", .english, ["ar": 0.9], "en", mixed: false)
+    expect("AR mode ignores the probe", .arabic, ["fr": 0.9], "ar", mixed: true)
+    let mixedPrompt = SpeechPrompt.build(mixed: true), englishPrompt = SpeechPrompt.build(mixed: false)
+    let pass = mixedPrompt.hasPrefix("بنستخدم HubSpot") && mixedPrompt.contains("workflow في HubSpot") && !englishPrompt.contains("عايز")
+    print("\(pass ? "PASS" : "FAIL")  prompts: Arabic-framed terms first for mixed speech, no Arabic for English"); ok = ok && pass
+    print(ok ? "all language checks passed" : "language checks FAILED")
+    exit(ok ? 0 : 1)
 
 case "check-gestures":
     var ok = true

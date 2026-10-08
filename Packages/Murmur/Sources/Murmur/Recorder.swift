@@ -31,6 +31,7 @@ public final class Recorder {
     private let lock = NSLock()
     private var pausedAt: Date?
     private var pausedTotal: TimeInterval = 0
+    private var samples16k: [Float] = []   // the same audio as the file, for the language probe and chunking
 
     public var onLevel: ((Float) -> Void)?
 
@@ -46,6 +47,9 @@ public final class Recorder {
         return (pausedAt ?? Date()).timeIntervalSince(startedAt) - pausedTotal
     }
     public var isPaused: Bool { pausedAt != nil }
+
+    /// The 16 kHz samples recorded so far.
+    public func snapshot() -> [Float] { lock.lock(); defer { lock.unlock() }; return samples16k }
     public var sawSound: Bool { lock.lock(); defer { lock.unlock() }; return peak > DictationLimits.silenceRMSFloor }
 
     public func pause() {
@@ -62,7 +66,7 @@ public final class Recorder {
     }
 
     public func start() throws {
-        lock.lock(); peak = 0; lock.unlock()
+        lock.lock(); peak = 0; samples16k.removeAll(keepingCapacity: true); lock.unlock()
         pausedAt = nil; pausedTotal = 0
         let input = engine.inputNode
         let hw = input.outputFormat(forBus: 0)
@@ -107,6 +111,7 @@ public final class Recorder {
             return buf
         }
         guard err == nil, out.frameLength > 0 else { return }
+        if let ch = out.floatChannelData?[0] { samples16k.append(contentsOf: UnsafeBufferPointer(start: ch, count: Int(out.frameLength))) }
         do { try file.write(from: out) } catch { NSLog("[deck] write failed: %@", "\(error)") }
     }
 

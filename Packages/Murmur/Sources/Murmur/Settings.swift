@@ -63,9 +63,16 @@ public enum DictationPrefs {
         }
         d.set(true, forKey: "dictation.migrated")
     }
+    /// AUTO by default: whisper detects the language and the mixed prompt keeps code-switching (D7).
     public static var lang: Lang {
-        get { Lang(rawValue: d.string(forKey: "dictation.lang") ?? "en") ?? .english }
+        get { Lang(rawValue: d.string(forKey: "dictation.lang") ?? "auto") ?? .auto }
         set { d.set(newValue.rawValue, forKey: "dictation.lang") }
+    }
+    /// One-time move to AUTO for anyone who had a fixed language before decision D7.
+    public static func adoptAutoLanguageOnce() {
+        guard d.object(forKey: "dictation.autoAdopted") == nil else { return }
+        lang = .auto
+        d.set(true, forKey: "dictation.autoAdopted")
     }
     public static var sounds: Bool {
         get { d.object(forKey: "dictation.sounds") == nil ? true : d.bool(forKey: "dictation.sounds") }

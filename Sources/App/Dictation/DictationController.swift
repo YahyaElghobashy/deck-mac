@@ -20,12 +20,19 @@ final class DictationController {
     private var store: Store?
     private var gesture = ChordGesture()
     private var gestureTimer: Timer?
+    /// The language heard in the first seconds of the current recording (AUTO only), and the work
+    /// that produces it. Bumping `session` makes a late result from an older recording harmless.
+    private var languageProbe: [String: Float]?
+    private var probeGroup = DispatchGroup()
+    private var probeTimer: Timer?
+    private var session = 0
 
     private init() {}
 
     func start() {
         DictationPaths.modelPathProvider = { DeckSettings.load().whisperModelPath }
         DictationPrefs.migrateFromMurmur()
+        DictationPrefs.adoptAutoLanguageOnce()
         state.lang = DictationPrefs.lang
         state.autoPaste = DictationPrefs.autoPaste
         state.sounds = DictationPrefs.sounds
@@ -139,6 +146,7 @@ final class DictationController {
         guard AVCaptureDevice.authorizationStatus(for: .audio) != .denied else { return fail(VoiceError.micDenied) }
         do { try recorder.start() } catch { return fail(error) }
         WhisperEngine.shared.preload(model: DictationPaths.model)   // loads while you talk
+        scheduleLanguageProbe()
         recordingStart = Date()
         state.level = 0
         state.elapsed = 0
@@ -166,6 +174,40 @@ final class DictationController {
             break
         default:
             beginRecording(locked: true)
+        }
+    }
+
+    // MARK: Language probe (AUTO)
+
+    /// About two seconds in, ask whisper which language this is, in the background, while the user
+    /// keeps talking. LanguagePolicy turns the answer into the language token and prompt.
+    private func scheduleLanguageProbe() {
+        session += 1
+        languageProbe = nil
+        probeTimer?.invalidate(); probeTimer = nil
+        guard state.lang == .auto else { return }
+        let mine = session
+        probeTimer = Timer.scheduledTimer(withTimeInterval: LanguagePolicy.probeSeconds, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.session == mine, case .recording = self.state.phase else { return }
+                let head = self.recorder.snapshot()
+                guard head.count >= Int(LanguagePolicy.probeSeconds * 16_000 * 0.8) else { return }
+                let model = DictationPaths.model
+                self.probeGroup.enter()
+                DispatchQueue.global(qos: .userInitiated).async {
+                    let started = Date()
+                    let probe = try? WhisperEngine.shared.detectLanguage(head, model: model)
+                    let ms = Int(Date().timeIntervalSince(started) * 1000)
+                    DispatchQueue.main.async {
+                        if self.session == mine {
+                            self.languageProbe = probe
+                            let top = probe?.max { $0.value < $1.value }
+                            self.metric("language_probe", ms: ms, detail: top.map { "\($0.key) \(Int($0.value * 100))%" })
+                        }
+                        self.probeGroup.leave()
+                    }
+                }
+            }
         }
     }
 
@@ -202,6 +244,7 @@ final class DictationController {
 
     /// Drops the current recording without a sound or a message (a lone tap).
     private func discardQuietly() {
+        probeTimer?.invalidate(); probeTimer = nil; session += 1
         ticker?.invalidate(); ticker = nil
         recordingStart = nil
         recorder.discard()
@@ -221,6 +264,7 @@ final class DictationController {
     private func cancel() {
         guard state.isBusy else { return }
         gesture.reset(); gestureTimer?.invalidate(); gestureTimer = nil
+        probeTimer?.invalidate(); probeTimer = nil; session += 1
         hud.setInteractive(false)
         ticker?.invalidate(); ticker = nil
         recordingStart = nil
@@ -245,7 +289,16 @@ final class DictationController {
         state.phase = .transcribing
         hud.show()
         let lang = state.lang
-        Transcriber.run(wav: url, lang: lang) { [weak self] result in
+        probeTimer?.invalidate(); probeTimer = nil
+        // A probe still running finishes first; it shares the engine's queue, so waiting costs nothing.
+        probeGroup.notify(queue: .main) { [weak self] in
+            guard let self else { return }
+            self.transcribe(url: url, lang: lang, seconds: secs, releasedAt: releasedAt, probe: self.languageProbe)
+        }
+    }
+
+    private func transcribe(url: URL, lang: Lang, seconds secs: TimeInterval, releasedAt: Date, probe: [String: Float]?) {
+        Transcriber.run(wav: url, lang: lang, probe: probe) { [weak self] result in
             guard let self else { return }
             switch result {
             case .success(let t):
