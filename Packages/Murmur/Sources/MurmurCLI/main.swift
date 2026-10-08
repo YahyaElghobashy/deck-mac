@@ -92,12 +92,11 @@ case "transcribe-many":
         var row: [String: Any] = ["file": f]
         do {
             let samples = try WavReader.samples(URL(fileURLWithPath: f))
-            // Like the app: detect the language on the first seconds, if the dictation is long enough.
-            let head = Int(LanguagePolicy.probeSeconds * 16_000)
-            let probe = useProbe && samples.count > head
-                ? try WhisperEngine.shared.detectLanguage(Array(samples.prefix(head)), model: DictationPaths.model) : nil
-            let t = try Transcriber.transcribe(samples, lang: lang, probe: probe, prompt: prompt)
-            row["decoded_as"] = LanguagePolicy.decide(mode: lang, probe: probe).code
+            // Like a streamed piece: the whole clip is probed, so the evidence is complete.
+            let probe = useProbe && samples.count >= 16_000
+                ? try WhisperEngine.shared.detectLanguage(samples, model: DictationPaths.model) : nil
+            let t = try Transcriber.transcribe(samples, lang: lang, probe: probe, complete: true, prompt: prompt)
+            row["decoded_as"] = LanguagePolicy.decide(mode: lang, probe: probe, complete: true).code
             row["text"] = t.text; row["language"] = t.language; row["infer_ms"] = t.inferMs; row["audio_seconds"] = t.audioSeconds
         } catch { row["error"] = "\(error)" }
         if let d = try? JSONSerialization.data(withJSONObject: row), let s = String(data: d, encoding: .utf8) { print(s) }
@@ -243,9 +242,35 @@ case "check-language":
     expect("pure Arabic (ar 97%) decodes as Arabic with the mixed prompt", .auto, ["ar": 0.97, "en": 0.01], "ar", mixed: true)
     expect("mixed, Arabic-led (ar 48%, en 46%)", .auto, ["ar": 0.48, "en": 0.46], "ar", mixed: true)
     expect("mixed, English-led (en 77%, ar 17%) stays on the Arabic route", .auto, ["en": 0.77, "ar": 0.17], "ar", mixed: true)
+    expect("French with a trace of English (fr 95%, en 3%) decodes as French", .auto, ["fr": 0.95, "en": 0.03], "fr", mixed: false)
     expect("French (fr 99%) decodes as French", .auto, ["fr": 0.99], "fr", mixed: false)
     expect("German (de 99%) decodes as German", .auto, ["de": 0.99], "de", mixed: false)
     expect("too short to probe: English and Arabic route", .auto, nil, "ar", mixed: true)
+    expect("any Arabic (12%) takes the Arabic route even when English leads", .auto, ["en": 0.86, "ar": 0.12], "ar", mixed: true)
+    expect("English with a trace of Arabic (3%) stays English", .auto, ["en": 0.96, "ar": 0.03], "en", mixed: false)
+    expect("Arabic heard early then drowned out by German still counts (merged)", .auto,
+           LanguagePolicy.merge(["en": 0.69, "ar": 0.10], ["de": 0.75, "en": 0.22]), "ar", mixed: true)
+    expect("English then German in one piece (merged): Arabic route keeps both", .auto,
+           LanguagePolicy.merge(["en": 0.99], ["de": 0.99]), "ar", mixed: true)
+    expect("English, Arabic and German mixed (en 67%, ar 26%)", .auto, ["en": 0.67, "ar": 0.26, "de": 0.02], "ar", mixed: true)
+    expect("English and German mid-sentence (en 57%, de 40%): Arabic route keeps both", .auto, ["en": 0.57, "de": 0.40], "ar", mixed: true)
+    expect("German with English terms (de 99%) decodes as German", .auto, ["de": 0.99], "de", mixed: false)
+    func expectPartial(_ name: String, _ probe: [String: Float], _ code: String, englishOnly: Bool = false) {
+        let d = LanguagePolicy.decide(mode: .auto, probe: probe, complete: false)
+        let pass = d.code == code && d.englishOnlyEvidence == englishOnly
+        print("\(pass ? "PASS" : "FAIL")  \(name)\(pass ? "" : "  (got \(d.code))")"); ok = ok && pass
+    }
+    expectPartial("partial evidence of English alone takes the Arabic route (your 8 Oct dictation)", ["en": 0.98], "ar", englishOnly: true)
+    expectPartial("partial but confident German stays German", ["de": 0.97], "de")
+    expectPartial("partial, uncertain evidence takes the Arabic route", ["de": 0.6, "fr": 0.2], "ar")
+    for (input, want) in [("درست: Draft a follow up email.", "Draft a follow up email."),
+                          ("يعني send the report to Mariam", "send the report to Mariam"),
+                          ("كلم العميل وقوله", "كلم العميل وقوله"),
+                          ("ابعت ال report ل Mariam على Slack", "ابعت ال report ل Mariam على Slack"),
+                          ("Move the HubSpot sync to Friday.", "Move the HubSpot sync to Friday.")] {
+        let got = Transcriber.dropStrayArabicLead(input)
+        print("\(got == want ? "PASS" : "FAIL")  stray-lead guard: \(input.prefix(28))\(got == want ? "" : "  (got \(got))")"); ok = ok && got == want
+    }
     expect("EN mode ignores the probe", .english, ["ar": 0.9], "en", mixed: false)
     expect("AR mode ignores the probe", .arabic, ["fr": 0.9], "ar", mixed: true)
     let mixedPrompt = SpeechPrompt.build(mixed: true), englishPrompt = SpeechPrompt.build(mixed: false)

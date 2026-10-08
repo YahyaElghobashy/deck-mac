@@ -8,9 +8,9 @@ public struct PauseChunker {
     static let frame = 480                        // 30 ms
 
     /// A chunk needs at least this much audio before a pause may end it.
-    public var minChunkSeconds: Double = 4.0
+    public var minChunkSeconds: Double = 2.0
     /// Silence at least this long counts as a pause.
-    public var minPauseSeconds: Double = 0.5
+    public var minPauseSeconds: Double = 0.4
     /// Past this, the chunk is cut at its quietest point even without a pause.
     public var maxChunkSeconds: Double = 25.0
 

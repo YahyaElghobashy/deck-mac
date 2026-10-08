@@ -44,14 +44,16 @@ public enum Transcriber {
 
     /// Deck's in-process path on samples already in memory: the engine, the clean-up, and the
     /// prompt-echo guard. Blocks the caller. An empty `text` means no speech was found.
-    public static func transcribe(_ samples: [Float], lang: Lang, probe: [String: Float]? = nil, prompt: String? = nil) throws -> Transcript {
+    public static func transcribe(_ samples: [Float], lang: Lang, probe: [String: Float]? = nil, complete: Bool = true,
+                                  prompt: String? = nil) throws -> Transcript {
         guard DictationPaths.modelExists else { throw VoiceError.modelMissing }
-        let decision = LanguagePolicy.decide(mode: lang, probe: probe)
+        let decision = LanguagePolicy.decide(mode: lang, probe: probe, complete: complete)
         let prompt = prompt ?? SpeechPrompt.build(mixed: decision.mixedPrompt)
         let out = try WhisperEngine.shared.transcribe(samples, model: DictationPaths.model, language: decision.code,
                                                       prompt: prompt.isEmpty ? nil : prompt)
         var text = clean(out.text)
         if SpeechPrompt.isEcho(text, of: prompt) { text = "" }
+        if decision.englishOnlyEvidence { text = dropStrayArabicLead(text) }
         return Transcript(text: text, engine: "whisper", language: LanguagePolicy.spoken(probe: probe, decision: decision), loadMs: out.loadMs,
                           inferMs: out.inferMs, audioSeconds: out.audioSeconds)
     }
@@ -81,6 +83,17 @@ public enum Transcriber {
         }
         let text = clean((try? String(contentsOf: txt, encoding: .utf8)) ?? "")
         return text.isEmpty ? .failure(VoiceError.empty) : .success(text)
+    }
+
+    /// "درست: Draft a follow-up email…" → "Draft a follow-up email…": the Arabic token sometimes writes
+    /// the first English word in Arabic script. Only one or two leading Arabic-script words go, and
+    /// only when everything after them is Latin script, so genuinely mixed text is never touched.
+    public static func dropStrayArabicLead(_ text: String) -> String {
+        let words = text.split(separator: " ", omittingEmptySubsequences: true)
+        let isArabic: (Substring) -> Bool = { $0.unicodeScalars.contains { (0x0600...0x06FF).contains($0.value) } }
+        let lead = words.prefix { isArabic($0) }.count
+        guard (1...2).contains(lead), words.count > lead, !words.dropFirst(lead).contains(where: isArabic) else { return text }
+        return words.dropFirst(lead).joined(separator: " ")
     }
 
     static func clean(_ s: String) -> String {

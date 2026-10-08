@@ -97,6 +97,11 @@ public final class WhisperEngine {
             p.print_timestamps = false
             p.suppress_blank = true
             p.audio_ctx = Self.audioContext(for: seconds)
+            // Hard mixed speech (three languages switching mid-sentence) can loop at temperature 0;
+            // whisper's retries at higher temperatures rescue it, but each failed attempt used to run
+            // to 448 tokens. Speech is about 10 tokens a second, so twice that bounds every attempt
+            // without cutting real text: the worst test line went from 3.5 s to 2.6 s, nothing else changed.
+            p.max_tokens = Int32(seconds * 20 + 32)
             let started = Date()
             let rc: Int32 = language.withCString { lang in
                 (prompt ?? "").withCString { promptPtr in
@@ -122,6 +127,9 @@ public final class WhisperEngine {
         try queue.sync {
             _ = try ensureLoaded(model)
             defer { scheduleUnload() }
+            // The probe keeps whisper's full 30 s window: a 768-frame window was twice as fast but
+            // under-heard short Arabic runs (11% instead of 44% on a mixed clip), and noticing Arabic
+            // is the probe's whole job.
             if probeState == nil { probeState = whisper_init_state(ctx) }
             guard let state = probeState else { throw VoiceError.transcribeFailed("language detection could not start") }
             let melOK = samples.withUnsafeBufferPointer {

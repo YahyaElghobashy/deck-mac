@@ -27,19 +27,20 @@ public enum SpeechPrompt {
         build(mixed: lang != .english, previous: previous)
     }
 
-    /// Mixed speech: the terms inside an Arabic sentence first ("we use HubSpot and Slack and …"),
-    /// so whisper sees Latin terms living inside Arabic, then the dialect hint and the mixed
-    /// example. English: the terms as a plain English list. Chosen on the synthetic set, where the
-    /// Arabic frame took English-term retention in mixed speech from 89% to 97%.
+    /// The Arabic route (Arabic token): the terms inside an Arabic sentence ("we use HubSpot and
+    /// Slack and …"), the dialect hint, the mixed example, then the terms as a plain English list.
+    /// With the Arabic token forced on all 30 synthetic clips, this order gave the best English
+    /// (WER 3.9%, one Arabic-script word leaking into English text against four for the order
+    /// without the closing list) while keeping 94% of English terms in mixed speech.
+    /// The English route: the terms as a plain English list.
     public static func build(mixed: Bool, previous: String? = nil) -> String {
         var parts: [String] = []
+        if mixed, !vocabulary.isEmpty { parts.append("بنستخدم " + vocabulary.joined(separator: " و ") + ".") }
         if mixed {
-            if !vocabulary.isEmpty { parts.append("بنستخدم " + vocabulary.joined(separator: " و ") + ".") }
             parts.append(egyptianHint)
             parts.append(mixedExample)
-        } else if !vocabulary.isEmpty {
-            parts.append("Terms: " + vocabulary.joined(separator: ", ") + ".")
         }
+        if !vocabulary.isEmpty { parts.append("Terms: " + vocabulary.joined(separator: ", ") + ".") }
         if let previous, !previous.isEmpty {
             parts.append(previous.split(separator: " ").suffix(20).joined(separator: " "))
         }
