@@ -8,7 +8,7 @@ if [[ -z "${DEVELOPER_DIR:-}" && -d "$HOME/Developer/CLT27/Library/Developer/Com
   export DEVELOPER_DIR="$HOME/Developer/CLT27/Library/Developer/CommandLineTools"
 fi
 ROOT="$PWD"; BUILD="$ROOT/build"; APP="$BUILD/Deck.app"; APPEX="$APP/Contents/PlugIns/DeckWidget.appex"; TMP="$BUILD/tmp"
-APP_ID="com.yahya.deck"; WIDGET_ID="com.yahya.deck.widget"; MIN_OS="14.0"; VERSION="1.0.1"; BUILD_NUM="$(date +%Y%m%d%H%M)"
+APP_ID="com.yahya.deck"; WIDGET_ID="com.yahya.deck.widget"; MIN_OS="14.0"; VERSION="1.1.0"; BUILD_NUM="$(date +%Y%m%d%H%M)"
 ARCH="$(uname -m)"; TARGET="${ARCH}-apple-macos${MIN_OS}"; INSTALL_DIR="${INSTALL_DIR:-/Applications}"
 SDK="$(xcrun --sdk macosx --show-sdk-path)"; SDK_VER="$(xcrun --sdk macosx --show-sdk-version)"; SWIFTC="$(xcrun -f swiftc)"
 echo "▸ swiftc : $("$SWIFTC" --version 2>&1 | head -1)"; echo "▸ target : $TARGET (SDK $SDK_VER)"
