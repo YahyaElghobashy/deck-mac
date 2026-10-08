@@ -3,24 +3,30 @@ import ApplicationServices
 import Foundation
 
 public enum Inserter {
-    /// Clipboard first, then ⌘V into the focused field when it accepts text. The clipboard keeps
-    /// the transcript either way.
+    /// ⌘V into the focused field when it accepts text, with the user's clipboard put back
+    /// afterwards. When there is nowhere to paste, the transcript stays on the clipboard.
     public static func deliver(_ text: String) -> Bool {
-        let pb = NSPasteboard.general
-        pb.clearContents()
-        pb.setString(text, forType: .string)
-        guard DictationPrefs.autoPaste, Permissions.accessibility, focusedAcceptsText() else { return false }
-        guard let src = CGEventSource(stateID: .combinedSessionState) else { return false }
+        guard DictationPrefs.autoPaste, Permissions.accessibility, focusedAcceptsText(),
+              let (down, up) = pasteKeystroke() else {
+            ClipboardSession.shared.put(text, restore: false)
+            return false
+        }
+        ClipboardSession.shared.put(text, restore: true)
+        down.post(tap: .cgAnnotatedSessionEventTap)
+        up.post(tap: .cgAnnotatedSessionEventTap)
+        return true
+    }
+
+    private static func pasteKeystroke() -> (CGEvent, CGEvent)? {
+        guard let src = CGEventSource(stateID: .combinedSessionState) else { return nil }
         src.setLocalEventsFilterDuringSuppressionState([.permitLocalKeyboardEvents, .permitLocalMouseEvents, .permitSystemDefinedEvents],
                                                        state: .eventSuppressionStateSuppressionInterval)
         let v: CGKeyCode = 9
         guard let down = CGEvent(keyboardEventSource: src, virtualKey: v, keyDown: true),
-              let up = CGEvent(keyboardEventSource: src, virtualKey: v, keyDown: false) else { return false }
+              let up = CGEvent(keyboardEventSource: src, virtualKey: v, keyDown: false) else { return nil }
         down.flags = .maskCommand
         up.flags = .maskCommand
-        down.post(tap: .cgAnnotatedSessionEventTap)
-        up.post(tap: .cgAnnotatedSessionEventTap)
-        return true
+        return (down, up)
     }
 
     private static func focusedAcceptsText() -> Bool {
