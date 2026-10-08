@@ -64,6 +64,11 @@ public final class Store {
             "CREATE TRIGGER meetings_au AFTER UPDATE ON meetings BEGIN UPDATE search SET title = new.title, body = new.summary || ' ' || new.transcript WHERE kind = 'meeting' AND ref_id = new.id; END",
             "CREATE TRIGGER meetings_ad AFTER DELETE ON meetings BEGIN DELETE FROM search WHERE kind = 'meeting' AND ref_id = old.id; END",
         ],
+        [
+            // v2: local metrics (FND-10). One row per event; `ms` for timings, `detail` for context.
+            "CREATE TABLE metrics(id INTEGER PRIMARY KEY, at REAL NOT NULL, path TEXT NOT NULL, ms INTEGER, detail TEXT)",
+            "CREATE INDEX metrics_path_at ON metrics(path, at)",
+        ],
     ]
 
     public let url: URL
@@ -130,6 +135,37 @@ public final class Store {
         try query("SELECT count(*) FROM dictations") { Int(sqlite3_column_int64($0, 0)) }.first ?? 0
     }
 
+    // MARK: Metrics
+
+    /// Records one event on a path such as "release_to_text.whisper"; `ms` is nil for plain counts.
+    public func addMetric(_ path: String, ms: Int? = nil, detail: String? = nil, at: Date = Date()) throws {
+        try run("INSERT INTO metrics(at, path, ms, detail) VALUES (?, ?, ?, ?)", [at.timeIntervalSince1970, path, ms, detail])
+    }
+
+    public struct MetricSummary {
+        public let path: String
+        public let count: Int
+        public let p50: Int?
+        public let p95: Int?
+        public let last: Date
+    }
+
+    /// Count, p50 and p95 per path over the most recent `window` events of each path.
+    public func metricSummaries(window: Int = 200) throws -> [MetricSummary] {
+        let paths = try query("SELECT path, count(*), max(at) FROM metrics GROUP BY path ORDER BY path") {
+            (String(cString: sqlite3_column_text($0, 0)), Int(sqlite3_column_int64($0, 1)), Date(timeIntervalSince1970: sqlite3_column_double($0, 2)))
+        }
+        return try paths.map { path, count, last in
+            let values = try query("SELECT ms FROM metrics WHERE path = ? AND ms IS NOT NULL ORDER BY at DESC LIMIT ?", [path, window]) {
+                Int(sqlite3_column_int64($0, 0))
+            }.sorted()
+            func pct(_ q: Double) -> Int? { values.isEmpty ? nil : values[min(values.count - 1, Int(Double(values.count - 1) * q + 0.5))] }
+            return MetricSummary(path: path, count: count, p50: pct(0.5), p95: pct(0.95), last: last)
+        }
+    }
+
+    public func clearMetrics() throws { try run("DELETE FROM metrics") }
+
     // MARK: Search
 
     /// Every word must appear; the last one may be a prefix. Results come best match first.
@@ -180,6 +216,7 @@ public final class Store {
             case nil: sqlite3_bind_null(stmt, idx)
             case let v as String: sqlite3_bind_text(stmt, idx, v, -1, Self.transient)
             case let v as Int: sqlite3_bind_int64(stmt, idx, Int64(v))
+            case let v as Int32: sqlite3_bind_int64(stmt, idx, Int64(v))
             case let v as Int64: sqlite3_bind_int64(stmt, idx, v)
             case let v as Double: sqlite3_bind_double(stmt, idx, v)
             default: sqlite3_finalize(stmt); throw StoreError(description: "unsupported value \(String(describing: arg))")

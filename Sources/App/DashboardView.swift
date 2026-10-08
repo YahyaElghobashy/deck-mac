@@ -84,8 +84,14 @@ struct DashboardView: View {
         SectionCard(title: "Dictation (Murmur, built in)", symbol: "waveform") {
             DictationPanel()
             RecoveryShortcuts(alexaKey: store.settings.hotkeyKey)
-            Button { DictationController.shared.presentSetup() } label: { Label("Set up dictation…", systemImage: "checklist") }
+            HStack(spacing: 8) {
+                Button { DictationController.shared.presentSetup() } label: { Label("Set up dictation…", systemImage: "checklist") }
+                    .buttonStyle(SecondaryButtonStyle())
+                Button { NotificationCenter.default.post(name: MetricsModel.openNotification, object: nil) } label: {
+                    Label("Metrics…", systemImage: "chart.bar.xaxis")
+                }
                 .buttonStyle(SecondaryButtonStyle())
+            }
             Text("Hold ⌃⌥Z and talk; release to transcribe and paste at the cursor. Tap Z a second time while ⌃⌥ are still down to lock hands-free (Stop / ⌃⌥Z / Esc end it). ⌃⌥. cycles EN → AR → AUTO. whisper.cpp large-v3-turbo, fully local; audio deleted after every run.")
                 .font(.system(size: 11)).foregroundStyle(Theme.text3).fixedSize(horizontal: false, vertical: true)
         }

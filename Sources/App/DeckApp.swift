@@ -29,6 +29,12 @@ struct DeckApp: App {
         }
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentSize)
+
+        Window("Dictation metrics", id: "metrics") {
+            MetricsView().preferredColorScheme(.dark)
+        }
+        .windowStyle(.hiddenTitleBar)
+        .defaultSize(width: 680, height: 420)
     }
 }
 
@@ -51,6 +57,10 @@ struct MenuBarLabel: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: SetupStatus.openNotification)) { _ in
                 openWindow(id: "setup")
+                NSApp.activate(ignoringOtherApps: true)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: MetricsModel.openNotification)) { _ in
+                openWindow(id: "metrics")
                 NSApp.activate(ignoringOtherApps: true)
             }
     }

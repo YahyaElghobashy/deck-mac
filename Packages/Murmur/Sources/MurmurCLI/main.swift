@@ -2,6 +2,7 @@ import AppKit
 import Carbon
 import Foundation
 import Murmur
+import SQLite3
 
 // murmur transcribe <file.wav> [--lang en|ar|auto] [--model path]
 //     Runs the exact transcription path Deck uses and prints the text and the time it took. The
@@ -42,7 +43,7 @@ case "transcribe":
         let ms = Int(Date().timeIntervalSince(started) * 1000)
         WhisperEngine.shared.shutdown()
         switch result {
-        case .success(let text): print("\(ms) ms\t\(text)  [\(Transcriber.lastEngine)]"); exit(0)
+        case .success(let t): print("\(ms) ms\t\(t.text)  [\(t.engine), \(t.language), infer \(t.inferMs) ms]"); exit(0)
         case .failure(let error): print("\(ms) ms\tERROR \(error.localizedDescription)"); exit(1)
         }
     }
@@ -151,7 +152,31 @@ enum StoreCheck {
         do {
             let reopened = try Store(url: url)
             check("reopening keeps the data and the schema", try reopened.dictationCount() == 2 && reopened.schemaVersion == Store.migrations.count)
-        } catch { check("reopen", false, "\(error)") }
+            for ms in [100, 200, 300, 400, 1000] { try reopened.addMetric("release_to_text.whisper", ms: ms) }
+            try reopened.addMetric("delivery.keystroke")
+            let sums = try reopened.metricSummaries()
+            let rt = sums.first { $0.path == "release_to_text.whisper" }
+            check("metrics: p50 and p95 per path", rt?.count == 5 && rt?.p50 == 300 && rt?.p95 == 1000, "p50 \(rt?.p50 ?? -1) p95 \(rt?.p95 ?? -1)")
+            check("metrics: plain counts have no timing", sums.first { $0.path == "delivery.keystroke" }.map { $0.count == 1 && $0.p50 == nil } == true)
+            try reopened.clearMetrics()
+            check("metrics can be cleared", try reopened.metricSummaries().isEmpty)
+        } catch { check("reopen and metrics", false, "\(error)") }
+
+        // An existing database at schema v1 (what Deck 1.1.0 created) upgrades in place.
+        let oldURL = dir.appendingPathComponent("v1.sqlite")
+        var db: OpaquePointer?
+        sqlite3_open(oldURL.path, &db)
+        for sql in Store.migrations[0] + ["INSERT INTO dictations(created_at, text) VALUES (1, 'kept across the upgrade')", "PRAGMA user_version = 1"] {
+            sqlite3_exec(db, sql, nil, nil, nil)
+        }
+        sqlite3_close(db)
+        do {
+            let upgraded = try Store(url: oldURL)
+            try upgraded.addMetric("model_load", ms: 2500)
+            let kept = try upgraded.latestDictation()?.text
+            check("a v1 database upgrades to the latest schema and keeps its rows",
+                  upgraded.schemaVersion == Store.migrations.count && kept == "kept across the upgrade", "version \(upgraded.schemaVersion)")
+        } catch { check("upgrade from v1", false, "\(error)") }
         print(ok ? "all store checks passed" : "store checks FAILED")
         return ok
     }

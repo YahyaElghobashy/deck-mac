@@ -30,6 +30,9 @@ final class DictationController {
         state.totalWords = DictationPrefs.totalWords
         applyShortcutKeys()
         WhisperEngine.shared.idleUnload = TimeInterval(state.keepModelMinutes * 60)
+        WhisperEngine.shared.onLoad = { [weak self] ms in
+            DispatchQueue.main.async { self?.metric("model_load", ms: ms) }
+        }
         openStore()
         warmIfNewBuild()
         DebugLog.write("dictation: ax=\(Permissions.accessibility) whisper=\(DictationPaths.whisper ?? "nil") model=\(DictationPaths.modelExists)")
@@ -188,6 +191,7 @@ final class DictationController {
 
     private func finishRecording() {
         guard case .recording = state.phase else { return }
+        let releasedAt = Date()
         if recorder.isPaused { recorder.resume() }
         ticker?.invalidate(); ticker = nil
         recordingStart = nil
@@ -200,18 +204,23 @@ final class DictationController {
         state.phase = .transcribing
         hud.show()
         let lang = state.lang
-        let transcribeStart = Date()
         Transcriber.run(wav: url, lang: lang) { [weak self] result in
             guard let self else { return }
             switch result {
-            case .success(let text):
-                let transcribeMs = Int(Date().timeIntervalSince(transcribeStart) * 1000)
+            case .success(let t):
+                let text = t.text
+                let releaseMs = Int(Date().timeIntervalSince(releasedAt) * 1000)
                 let app = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
                 LastDictation.record(text)
                 let pasted = Inserter.deliver(text)
-                DebugLog.write("dictation delivered via \(Inserter.lastMethod.rawValue) in \(transcribeMs) ms")
-                self.save(DictationRecord(text: text, lang: lang.rawValue, engine: Transcriber.lastEngine, delivery: Inserter.lastMethod.rawValue,
-                                          appBundleID: app, audioSeconds: secs, transcribeMs: transcribeMs))
+                let method = Inserter.lastMethod.rawValue
+                DebugLog.write("dictation \(t.language) via \(t.engine), text \(releaseMs) ms after release, delivered via \(method)")
+                self.save(DictationRecord(text: text, lang: t.language, engine: t.engine, delivery: method,
+                                          appBundleID: app, audioSeconds: secs, transcribeMs: t.inferMs))
+                self.metric("release_to_text.\(t.engine)", ms: releaseMs, detail: String(format: "%.1fs %@", t.audioSeconds, t.language))
+                self.metric("transcribe.\(t.engine)", ms: t.inferMs)
+                if t.engine != "whisper" { self.metric("fallback.\(t.engine)") }
+                self.metric("delivery.\(method)")
                 DictationPrefs.totalWords += text.split(whereSeparator: { $0 == " " || $0 == "\n" }).count
                 self.state.totalWords = DictationPrefs.totalWords
                 self.state.phase = .done(text: text, pasted: pasted)
@@ -254,6 +263,14 @@ final class DictationController {
     private func save(_ record: DictationRecord) {
         do { try store?.addDictation(record) } catch { DebugLog.write("store write failed: \(error)") }
     }
+
+    /// Local metrics only (FND-10): written to the database, shown in the Metrics window.
+    func metric(_ path: String, ms: Int? = nil, detail: String? = nil) {
+        do { try store?.addMetric(path, ms: ms, detail: detail) } catch { DebugLog.write("metric write failed: \(error)") }
+    }
+
+    func metricSummaries() -> [Store.MetricSummary] { (try? store?.metricSummaries()) ?? [] }
+    func clearMetrics() { try? store?.clearMetrics() }
 
     // MARK: Paste last, copy last
 

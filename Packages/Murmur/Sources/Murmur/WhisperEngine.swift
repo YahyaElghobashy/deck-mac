@@ -20,6 +20,9 @@ public final class WhisperEngine {
     /// Seconds of idleness before the model is freed; 0 keeps it loaded until quit.
     public var idleUnload: TimeInterval = 600
 
+    /// Called on the engine's queue after each model load, with how long it took.
+    public var onLoad: ((Int) -> Void)?
+
     private let queue = DispatchQueue(label: "murmur.whisper", qos: .userInitiated)
     private var ctx: OpaquePointer?
     private var loadedPath: String?
@@ -123,7 +126,9 @@ public final class WhisperEngine {
         }
         ctx = c
         loadedPath = path
-        return Int(Date().timeIntervalSince(started) * 1000)
+        let ms = Int(Date().timeIntervalSince(started) * 1000)
+        onLoad?(ms)
+        return ms
     }
 
     private func scheduleUnload() {

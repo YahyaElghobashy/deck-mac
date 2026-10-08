@@ -1,31 +1,44 @@
 import Foundation
 
-public enum Transcriber {
-    /// Which engine produced the last transcript: "whisper" (in process) or "whisper-cli".
-    /// Set on the main thread just before the completion runs.
-    public private(set) static var lastEngine = "whisper"
+/// A finished transcription and how it was made, for the metrics.
+public struct Transcript {
+    public let text: String
+    /// "whisper" (in process) or "whisper-cli" (the fallback).
+    public let engine: String
+    /// The language whisper used: the one forced, or the one it detected in AUTO.
+    public let language: String
+    public let loadMs: Int
+    public let inferMs: Int
+    public let audioSeconds: Double
+}
 
+public enum Transcriber {
     /// Transcribes the wav with the in-process engine, falling back to whisper-cli if the engine
-    /// cannot run. The audio is deleted before returning, on every path.
-    public static func run(wav: URL, lang: Lang, completion: @escaping (Result<String, Error>) -> Void) {
+    /// cannot run. The audio is deleted before returning, on every path. Completes on the main thread.
+    public static func run(wav: URL, lang: Lang, completion: @escaping (Result<Transcript, Error>) -> Void) {
         DispatchQueue.global(qos: .userInitiated).async {
-            let result: Result<String, Error>
-            var engine = "whisper"
+            let result: Result<Transcript, Error>
             do {
                 guard DictationPaths.modelExists else { throw VoiceError.modelMissing }
                 let samples = try WavReader.samples(wav)
                 let out = try WhisperEngine.shared.transcribe(samples, model: DictationPaths.model, language: lang.rawValue)
                 let text = clean(out.text)
-                result = text.isEmpty ? .failure(VoiceError.empty) : .success(text)
+                result = text.isEmpty ? .failure(VoiceError.empty)
+                    : .success(Transcript(text: text, engine: "whisper", language: out.language, loadMs: out.loadMs,
+                                          inferMs: out.inferMs, audioSeconds: out.audioSeconds))
             } catch VoiceError.modelMissing {
                 result = .failure(VoiceError.modelMissing)
             } catch {
                 NSLog("[murmur] in-process whisper failed (%@); using whisper-cli", "\(error)")
-                engine = "whisper-cli"
-                result = runCLI(wav: wav, lang: lang)
+                let started = Date()
+                let seconds = (try? WavReader.samples(wav).count).map { Double($0) / 16_000 } ?? 0
+                result = runCLI(wav: wav, lang: lang).map {
+                    Transcript(text: $0, engine: "whisper-cli", language: lang.rawValue, loadMs: 0,
+                               inferMs: Int(Date().timeIntervalSince(started) * 1000), audioSeconds: seconds)
+                }
             }
             try? FileManager.default.removeItem(at: wav)
-            DispatchQueue.main.async { lastEngine = engine; completion(result) }
+            DispatchQueue.main.async { completion(result) }
         }
     }
 
