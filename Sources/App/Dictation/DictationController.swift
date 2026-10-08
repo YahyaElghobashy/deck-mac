@@ -195,6 +195,7 @@ final class DictationController {
             case .success(let text):
                 LastDictation.record(text)
                 let pasted = Inserter.deliver(text)
+                DebugLog.write("dictation delivered via \(Inserter.lastMethod.rawValue)")
                 DictationPrefs.totalWords += text.split(whereSeparator: { $0 == " " || $0 == "\n" }).count
                 self.state.totalWords = DictationPrefs.totalWords
                 self.state.phase = .done(text: text, pasted: pasted)

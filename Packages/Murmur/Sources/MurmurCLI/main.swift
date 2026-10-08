@@ -1,4 +1,5 @@
 import AppKit
+import Carbon
 import Foundation
 import Murmur
 
@@ -9,6 +10,8 @@ import Murmur
 //     Exercises clipboard restore on a private pasteboard (never the user's clipboard).
 // murmur check-last
 //     Checks the 24-hour window for paste-last and copy-last, and the shortcut key codes.
+// murmur check-paste
+//     Shows which key ⌘V uses on each enabled keyboard layout. Read-only: no layout is switched.
 
 let args = Array(CommandLine.arguments.dropFirst())
 func value(_ flag: String) -> String? {
@@ -42,6 +45,20 @@ case "transcribe":
 
 case "check-clipboard":
     exit(ClipboardCheck.run() ? 0 : 1)
+
+case "check-paste":
+    let current = KeyLayout.commandKeyCode(for: "v")
+    print("current layout: ⌘V uses key code \(current)\(current == 9 ? " (the V position)" : "")")
+    let layouts = (TISCreateInputSourceList(nil, false)?.takeRetainedValue() as? [TISInputSource] ?? []).filter { src in
+        guard let t = TISGetInputSourceProperty(src, kTISPropertyInputSourceType) else { return false }
+        return (Unmanaged<CFString>.fromOpaque(t).takeUnretainedValue() as String) == (kTISTypeKeyboardLayout as String)
+    }
+    for src in layouts {
+        let name = TISGetInputSourceProperty(src, kTISPropertyLocalizedName).map { Unmanaged<CFString>.fromOpaque($0).takeUnretainedValue() as String } ?? "?"
+        let code = KeyLayout.keyCode(for: "v", in: src).map(String.init) ?? "none on its ⌘ layer, falls back to the shortcut layout"
+        print("  \(name): \(code)")
+    }
+    exit(0)
 
 case "check-last":
     var ok = true
