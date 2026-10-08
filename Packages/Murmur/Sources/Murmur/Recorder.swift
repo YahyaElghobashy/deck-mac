@@ -46,7 +46,7 @@ public final class Recorder {
         return (pausedAt ?? Date()).timeIntervalSince(startedAt) - pausedTotal
     }
     public var isPaused: Bool { pausedAt != nil }
-    public var sawSound: Bool { peak > DictationLimits.silenceRMSFloor }
+    public var sawSound: Bool { lock.lock(); defer { lock.unlock() }; return peak > DictationLimits.silenceRMSFloor }
 
     public func pause() {
         guard engine.isRunning, pausedAt == nil else { return }
@@ -62,7 +62,8 @@ public final class Recorder {
     }
 
     public func start() throws {
-        peak = 0; pausedAt = nil; pausedTotal = 0
+        lock.lock(); peak = 0; lock.unlock()
+        pausedAt = nil; pausedTotal = 0
         let input = engine.inputNode
         let hw = input.outputFormat(forBus: 0)
         guard hw.sampleRate > 0, hw.channelCount > 0 else { throw VoiceError.noInput }
@@ -74,8 +75,7 @@ public final class Recorder {
         guard let conv = AVAudioConverter(from: hw, to: f.processingFormat) else {
             throw VoiceError.engineFailed("cannot convert \(Int(hw.sampleRate))Hz to 16kHz")
         }
-        lock.lock(); file = f; lock.unlock()
-        converter = conv
+        lock.lock(); file = f; converter = conv; lock.unlock()
         input.installTap(onBus: 0, bufferSize: 4096, format: hw) { [weak self] buf, _ in self?.consume(buf) }
         engine.prepare()
         do { try engine.start() } catch { throw VoiceError.engineFailed(error.localizedDescription) }
@@ -88,7 +88,7 @@ public final class Recorder {
             let n = Int(buf.frameLength)
             for i in 0..<n { sum += ch[i] * ch[i] }
             let rms = n > 0 ? (sum / Float(n)).squareRoot() : 0
-            if rms > peak { peak = rms }
+            lock.lock(); if rms > peak { peak = rms }; lock.unlock()
             let shaped = min(1, pow(max(0, rms) * 16, 0.72))
             DispatchQueue.main.async { self.onLevel?(shaped) }
         }
@@ -117,8 +117,7 @@ public final class Recorder {
             engine.inputNode.removeTap(onBus: 0)
             engine.stop()
         }
-        lock.lock(); file = nil; lock.unlock()
-        converter = nil
+        lock.lock(); file = nil; converter = nil; lock.unlock()
         startedAt = nil
         let u = url
         url = nil

@@ -28,6 +28,9 @@ public final class HotkeyMonitor {
 
     public init() {}
 
+    /// The tap holds an unretained pointer to self, so it must not outlive the monitor.
+    deinit { stop() }
+
     public func start() -> Bool {
         guard tap == nil else { return true }
         let mask = (1 << CGEventType.keyDown.rawValue) | (1 << CGEventType.keyUp.rawValue) | (1 << CGEventType.flagsChanged.rawValue)

@@ -119,6 +119,13 @@ public final class Store {
         }.first
     }
 
+    /// Apps that received dictations, newest first (also proves optional values bind and read back).
+    public func recentApps(limit: Int = 10) throws -> [String] {
+        try query("SELECT app_bundle_id FROM dictations WHERE app_bundle_id IS NOT NULL ORDER BY created_at DESC LIMIT ?", [limit]) {
+            String(cString: sqlite3_column_text($0, 0))
+        }
+    }
+
     public func dictationCount() throws -> Int {
         try query("SELECT count(*) FROM dictations") { Int(sqlite3_column_int64($0, 0)) }.first ?? 0
     }

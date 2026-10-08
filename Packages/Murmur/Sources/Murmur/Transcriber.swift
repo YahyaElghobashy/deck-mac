@@ -2,6 +2,7 @@ import Foundation
 
 public enum Transcriber {
     /// Which engine produced the last transcript: "whisper" (in process) or "whisper-cli".
+    /// Set on the main thread just before the completion runs.
     public private(set) static var lastEngine = "whisper"
 
     /// Transcribes the wav with the in-process engine, falling back to whisper-cli if the engine
@@ -9,22 +10,22 @@ public enum Transcriber {
     public static func run(wav: URL, lang: Lang, completion: @escaping (Result<String, Error>) -> Void) {
         DispatchQueue.global(qos: .userInitiated).async {
             let result: Result<String, Error>
+            var engine = "whisper"
             do {
                 guard DictationPaths.modelExists else { throw VoiceError.modelMissing }
                 let samples = try WavReader.samples(wav)
                 let out = try WhisperEngine.shared.transcribe(samples, model: DictationPaths.model, language: lang.rawValue)
                 let text = clean(out.text)
-                lastEngine = "whisper"
                 result = text.isEmpty ? .failure(VoiceError.empty) : .success(text)
             } catch VoiceError.modelMissing {
                 result = .failure(VoiceError.modelMissing)
             } catch {
                 NSLog("[murmur] in-process whisper failed (%@); using whisper-cli", "\(error)")
-                lastEngine = "whisper-cli"
+                engine = "whisper-cli"
                 result = runCLI(wav: wav, lang: lang)
             }
             try? FileManager.default.removeItem(at: wav)
-            DispatchQueue.main.async { completion(result) }
+            DispatchQueue.main.async { lastEngine = engine; completion(result) }
         }
     }
 

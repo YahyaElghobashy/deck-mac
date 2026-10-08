@@ -137,6 +137,7 @@ enum StoreCheck {
             try store.addDictation(DictationRecord(text: "كلم العميل وقوله إننا محتاجين يومين زيادة", lang: "ar", engine: "whisper-cli",
                                                    delivery: "clipboard", appBundleID: nil, audioSeconds: 4.1, transcribeMs: 910, createdAt: now))
             check("dictations are saved", try store.dictationCount() == 2)
+            check("an optional app ID is stored when present and skipped when nil", try store.recentApps() == ["com.apple.mail"])
             check("the latest dictation is the newest one", try store.latestDictation()?.text.hasPrefix("كلم") == true)
             let en = try store.search("hubspot")
             check("full-text search finds English", en.first?.kind == "dictation" && en.first?.snippet.contains("[HubSpot]") == true, en.first?.snippet ?? "no hit")
