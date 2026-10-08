@@ -6,6 +6,8 @@ import Murmur
 // murmur transcribe <file.wav> [--lang en|ar|auto] [--model path]
 //     Runs the exact transcription path Deck uses and prints the text and the time it took. The
 //     input is copied first, because the transcriber deletes its audio on every path.
+// murmur bench <file.wav>… [--runs N] [--lang auto|en|ar]
+//     Loads the model once, then times N in-process transcriptions per file (DIC-01).
 // murmur check-clipboard
 //     Exercises clipboard restore on a private pasteboard (never the user's clipboard).
 // murmur check-last
@@ -38,12 +40,44 @@ case "transcribe":
     let started = Date()
     Transcriber.run(wav: copy, lang: lang) { result in
         let ms = Int(Date().timeIntervalSince(started) * 1000)
+        WhisperEngine.shared.shutdown()
         switch result {
-        case .success(let text): print("\(ms) ms\t\(text)"); exit(0)
+        case .success(let text): print("\(ms) ms\t\(text)  [\(Transcriber.lastEngine)]"); exit(0)
         case .failure(let error): print("\(ms) ms\tERROR \(error.localizedDescription)"); exit(1)
         }
     }
     dispatchMain()
+
+case "bench":
+    let files = args.dropFirst().prefix { !$0.hasPrefix("--") }
+    let runs = Int(value("--runs") ?? "10") ?? 10
+    let lang = value("--lang") ?? "auto"
+    guard !files.isEmpty else { fail("usage: murmur bench <file.wav>… [--runs N] [--lang auto|en|ar]", code: 64) }
+    do {
+        let first = try WavReader.samples(URL(fileURLWithPath: files.first!))
+        let t0 = Date()
+        WhisperEngine.shared.preload(model: DictationPaths.model)   // what Deck does on ⌃⌥Z
+        _ = WhisperEngine.shared.isLoaded                            // waits for the load and warm-up
+        let preloadMs = Int(Date().timeIntervalSince(t0) * 1000)
+        let cold = try WhisperEngine.shared.transcribe(first, model: DictationPaths.model, language: lang)
+        print("preload (load + warm-up) \(preloadMs) ms, first transcription after it \(cold.inferMs) ms")
+        for f in files {
+            let samples = try WavReader.samples(URL(fileURLWithPath: f))
+            var times: [Int] = []
+            var last: WhisperEngine.Output?
+            for _ in 0..<runs {
+                let out = try WhisperEngine.shared.transcribe(samples, model: DictationPaths.model, language: lang)
+                times.append(out.inferMs); last = out
+            }
+            times.sort()
+            let name = URL(fileURLWithPath: f).lastPathComponent
+            print(String(format: "%@  audio %.1f s  ctx %d  p50 %d ms  p95 %d ms  [%@] %@", name, last!.audioSeconds, last!.audioContext,
+                         times[times.count / 2], times[min(times.count - 1, Int(Double(times.count) * 0.95))], last!.language,
+                         String(last!.text.trimmingCharacters(in: .whitespaces).prefix(70))))
+        }
+    } catch { print("ERROR \(error)") }
+    WhisperEngine.shared.shutdown()
+    exit(0)
 
 case "check-clipboard":
     exit(ClipboardCheck.run() ? 0 : 1)

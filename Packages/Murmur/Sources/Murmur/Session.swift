@@ -24,6 +24,7 @@ public final class DictationState: ObservableObject {
     @Published public var totalWords: Int = DictationPrefs.totalWords
     @Published public var pasteLastKey: String = DictationPrefs.pasteLastKey
     @Published public var copyLastKey: String = DictationPrefs.copyLastKey
+    @Published public var keepModelMinutes: Int = DictationPrefs.keepModelMinutes
 
     public init() {}
 

@@ -7,3 +7,5 @@ signing/*.pem
 .DS_Store
 *.log
 Packages/*/.build/
+vendor/whisper/
+vendor/.whisper-build/

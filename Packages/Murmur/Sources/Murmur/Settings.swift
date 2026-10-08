@@ -79,6 +79,11 @@ public enum DictationPrefs {
         get { d.integer(forKey: "dictation.totalWords") }
         set { d.set(newValue, forKey: "dictation.totalWords") }
     }
+    /// Minutes the speech model stays in memory after the last dictation; 0 keeps it until quit.
+    public static var keepModelMinutes: Int {
+        get { d.object(forKey: "dictation.keepModelMinutes") == nil ? 10 : d.integer(forKey: "dictation.keepModelMinutes") }
+        set { d.set(newValue, forKey: "dictation.keepModelMinutes") }
+    }
     /// Letter for ⌃⌥<letter> that pastes the last dictation again.
     public static var pasteLastKey: String {
         get { d.string(forKey: "dictation.pasteLastKey") ?? "v" }

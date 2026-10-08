@@ -17,14 +17,21 @@ SHARED=( "$ROOT"/Sources/Shared/*.swift )
 APP_SHARED=( ${SHARED:#*Intents.swift} )
 COMMON=( -O -swift-version 5 -parse-as-library -target "$TARGET" -sdk "$SDK" -suppress-warnings )
 
-# Murmur, the voice core (Packages/Murmur), compiled first as a static library Deck links.
+# Murmur, the voice core (Packages/Murmur), compiled first as a static library Deck links. It
+# runs whisper.cpp in process from vendor/whisper (static, Metal embedded; vendor/fetch-whisper.sh).
+WHISPER="$ROOT/vendor/whisper"
+[[ -f "$WHISPER/lib/libwhisper.a" ]] || "$ROOT/vendor/fetch-whisper.sh"
+CWHISPER=( -I "$ROOT/Packages/Murmur/Sources/CWhisper" )
+WHISPER_LINK=( -L "$WHISPER/lib" -lwhisper -lggml -lggml-base -lggml-cpu -lggml-metal -lggml-blas -lc++
+  -framework Metal -framework MetalKit -framework Accelerate )
 MODULES="$TMP/modules"; mkdir -p "$MODULES"
 echo "▸ compiling Murmur…"
-"$SWIFTC" "${COMMON[@]}" -whole-module-optimization -module-name Murmur -emit-module -emit-module-path "$MODULES/Murmur.swiftmodule" \
+"$SWIFTC" "${COMMON[@]}" -whole-module-optimization -module-name Murmur "${CWHISPER[@]}" \
+  -emit-module -emit-module-path "$MODULES/Murmur.swiftmodule" \
   -emit-library -static -o "$MODULES/libMurmur.a" "$ROOT"/Packages/Murmur/Sources/Murmur/*.swift
 
 echo "▸ compiling app…"
-"$SWIFTC" "${COMMON[@]}" -module-name Deck -I "$MODULES" -L "$MODULES" -lMurmur \
+"$SWIFTC" "${COMMON[@]}" -module-name Deck -I "$MODULES" "${CWHISPER[@]}" -L "$MODULES" -lMurmur "${WHISPER_LINK[@]}" \
   "${APP_SHARED[@]}" "$ROOT"/Sources/App/*.swift "$ROOT"/Sources/App/Dictation/*.swift \
   -framework SwiftUI -framework AppKit -framework WidgetKit -framework AppIntents -framework Speech -framework AVFoundation \
   -framework Carbon -framework Combine -o "$APP/Contents/MacOS/Deck"

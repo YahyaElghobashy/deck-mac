@@ -1,0 +1,6 @@
+// whisper.cpp's C API for Murmur. The header lives in Deck's vendor/whisper, which
+// vendor/fetch-whisper.sh builds from a pinned release.
+module CWhisper [system] {
+    header "../../../../vendor/whisper/include/whisper.h"
+    export *
+}

@@ -1,4 +1,5 @@
 import AppKit
+import Murmur
 import Carbon
 import WidgetKit
 
@@ -24,6 +25,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        // Synchronously, before the process exits: a whisper model still in memory when ggml's
+        // Metal device is torn down at exit crashes the app on quit.
+        WhisperEngine.shared.shutdown()
         Task { @MainActor in
             BridgeSupervisor.shared.stop()
             DictationController.shared.stop()

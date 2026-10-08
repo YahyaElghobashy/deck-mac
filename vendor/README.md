@@ -14,15 +14,17 @@ back to whatever Node and `whisper-cli` are on your PATH when they do not.
 The official Node binary has no third-party dylib dependencies, so copying that one file into the
 app bundle is enough.
 
-## `vendor/whisper-cli` — static whisper.cpp with Metal embedded
+## `vendor/whisper` and `vendor/whisper-cli` — static whisper.cpp with Metal embedded
 
 ```bash
-git clone https://github.com/ggml-org/whisper.cpp
-cd whisper.cpp
-cmake -B build -DBUILD_SHARED_LIBS=OFF -DGGML_METAL_EMBED_LIBRARY=ON -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0
-cmake --build build --config Release -j
-cp build/bin/whisper-cli ../vendor/whisper-cli
+./fetch-whisper.sh       # downloads a pinned release, checks its SHA-256, builds both
 ```
+
+Murmur runs whisper.cpp **in process**: `vendor/whisper/{include,lib}` holds the header and the
+static libraries (`libwhisper.a`, `libggml*.a`) that `build.sh` links into Deck, so the model stays
+loaded between dictations. `vendor/whisper-cli` is the same release as a single executable, kept
+as the fallback when the in-process engine cannot start. `build.sh` runs `fetch-whisper.sh` itself
+when the libraries are missing. The pinned version and checksum are at the top of the script.
 
 `BUILD_SHARED_LIBS=OFF` plus `GGML_METAL_EMBED_LIBRARY=ON` is the whole trick: it produces one
 ~3 MB executable with the Metal shaders baked in and no `libwhisper`/`libggml`/`libomp` to chase

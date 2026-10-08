@@ -29,6 +29,7 @@ final class DictationController {
         state.sounds = DictationPrefs.sounds
         state.totalWords = DictationPrefs.totalWords
         applyShortcutKeys()
+        WhisperEngine.shared.idleUnload = TimeInterval(state.keepModelMinutes * 60)
         openStore()
         DebugLog.write("dictation: ax=\(Permissions.accessibility) whisper=\(DictationPaths.whisper ?? "nil") model=\(DictationPaths.modelExists)")
         wireHotkey()
@@ -63,6 +64,7 @@ final class DictationController {
     func stop() {
         recorder.discard()
         hotkey.stop()
+        WhisperEngine.shared.shutdown()
     }
 
     // MARK: Permissions
@@ -124,6 +126,7 @@ final class DictationController {
         guard !state.isBusy else { return }
         guard AVCaptureDevice.authorizationStatus(for: .audio) != .denied else { return fail(VoiceError.micDenied) }
         do { try recorder.start() } catch { return fail(error) }
+        WhisperEngine.shared.preload(model: DictationPaths.model)   // loads while you talk
         recordingStart = Date()
         state.level = 0
         state.elapsed = 0
@@ -202,7 +205,7 @@ final class DictationController {
                 LastDictation.record(text)
                 let pasted = Inserter.deliver(text)
                 DebugLog.write("dictation delivered via \(Inserter.lastMethod.rawValue) in \(transcribeMs) ms")
-                self.save(DictationRecord(text: text, lang: lang.rawValue, engine: "whisper-cli", delivery: Inserter.lastMethod.rawValue,
+                self.save(DictationRecord(text: text, lang: lang.rawValue, engine: Transcriber.lastEngine, delivery: Inserter.lastMethod.rawValue,
                                           appBundleID: app, audioSeconds: secs, transcribeMs: transcribeMs))
                 DictationPrefs.totalWords += text.split(whereSeparator: { $0 == " " || $0 == "\n" }).count
                 self.state.totalWords = DictationPrefs.totalWords
@@ -284,4 +287,8 @@ final class DictationController {
     func setSounds(_ on: Bool) { DictationPrefs.sounds = on; state.sounds = on }
     func setPasteLastKey(_ k: String) { DictationPrefs.pasteLastKey = k; state.pasteLastKey = k; applyShortcutKeys() }
     func setCopyLastKey(_ k: String) { DictationPrefs.copyLastKey = k; state.copyLastKey = k; applyShortcutKeys() }
+    func setKeepModelMinutes(_ m: Int) {
+        DictationPrefs.keepModelMinutes = m; state.keepModelMinutes = m
+        WhisperEngine.shared.idleUnload = TimeInterval(m * 60)
+    }
 }

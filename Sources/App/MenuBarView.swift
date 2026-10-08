@@ -168,6 +168,15 @@ struct RecoveryShortcuts: View {
             Text("re-use the last dictation for 24 hours").font(.system(size: 11)).foregroundStyle(Theme.text3)
             Spacer()
         }
+        HStack(spacing: 6) {
+            Text("Keep the speech model loaded for").font(.system(size: 11)).foregroundStyle(Theme.text3)
+            Picker("", selection: Binding(get: { d.keepModelMinutes }, set: { DictationController.shared.setKeepModelMinutes($0) })) {
+                ForEach([5, 10, 30, 60, 0], id: \.self) { Text($0 == 0 ? "until quit" : "\($0) min").tag($0) }
+            }
+            .labelsHidden().frame(width: 96)
+            Text("after the last dictation · about 1.9 GB while loaded").font(.system(size: 11)).foregroundStyle(Theme.text3)
+            Spacer()
+        }
     }
 
     private func picker(_ title: String, selection: String, taken: String, set: @escaping (String) -> Void) -> some View {
