@@ -49,7 +49,8 @@ final class DictationController {
             Task { @MainActor in self?.hotkey.reenableIfNeeded() }
         }
         Recorder.requestMic { ok in DebugLog.write("mic granted=\(ok)") }
-        if !armIfPermitted() { presentFirstRun() }
+        armIfPermitted()
+        if !SetupStatus.read().ready { presentSetup() }
         // The grant can arrive any time (or vanish after a rebuild); keep checking, cheaply.
         Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
             Task { @MainActor in
@@ -77,11 +78,14 @@ final class DictationController {
         return ok
     }
 
-    private func presentFirstRun() {
-        flash(.failed("Turn Deck on in Accessibility to dictate"), for: 4.5)
-        Permissions.requestAccessibility()
-        Permissions.openAccessibilitySettings()
-        pollForPermission()
+    /// Opens "Set up dictation". Called at launch when dictation cannot work, and from the
+    /// Dashboard and the menu. Polls so the chord arms the moment Accessibility is granted.
+    func presentSetup() {
+        DebugLog.write("setup opened: \(SetupStatus.read())")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            NotificationCenter.default.post(name: SetupStatus.openNotification, object: nil)
+        }
+        if !state.armed { pollForPermission() }
     }
 
     func pollForPermission() {

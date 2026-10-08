@@ -129,7 +129,7 @@ struct DictationPanel: View {
                 }
                 Spacer()
                 if !d.armed {
-                    Button("Fix") { Permissions.requestAccessibility(); Permissions.openAccessibilitySettings(); DictationController.shared.pollForPermission() }
+                    Button("Fix") { DictationController.shared.presentSetup() }
                         .buttonStyle(PrimaryButtonStyle())
                 }
             }

@@ -23,6 +23,12 @@ struct DeckApp: App {
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 960, height: 720)
+
+        Window("Set up dictation", id: "setup") {
+            SetupView().preferredColorScheme(.dark)
+        }
+        .windowStyle(.hiddenTitleBar)
+        .windowResizability(.contentSize)
     }
 }
 
@@ -41,6 +47,10 @@ struct MenuBarLabel: View {
         }
             .onReceive(NotificationCenter.default.publisher(for: Notification.Name("com.yahya.deck.openMain"))) { _ in
                 openWindow(id: "main")
+                NSApp.activate(ignoringOtherApps: true)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: SetupStatus.openNotification)) { _ in
+                openWindow(id: "setup")
                 NSApp.activate(ignoringOtherApps: true)
             }
     }

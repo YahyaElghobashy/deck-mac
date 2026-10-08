@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import Murmur
 import Carbon
 import WidgetKit
@@ -8,6 +9,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         try? FileManager.default.createDirectory(at: DeckPaths.dir, withIntermediateDirectories: true)
+        if let i = CommandLine.arguments.firstIndex(of: "--render-setup"), i + 1 < CommandLine.arguments.count {
+            renderSetup(to: CommandLine.arguments[i + 1])   // a PNG of "Set up dictation", for checks; then quits
+        }
         SuiteFlags.handle(appName: "Deck")
         DebugLog.write("Deck launched")
         Task { @MainActor in BridgeSupervisor.shared.start() }
@@ -22,6 +26,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         registerHotKey()
         WidgetCenter.shared.reloadAllTimelines()
         Task { @MainActor in DictationController.shared.start() }
+    }
+
+    @MainActor private func renderSetup(to path: String) -> Never {
+        let renderer = ImageRenderer(content: SetupView().environment(\.colorScheme, .dark))
+        renderer.scale = 2
+        if let image = renderer.nsImage, let tiff = image.tiffRepresentation,
+           let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
+            try? png.write(to: URL(fileURLWithPath: path))
+        }
+        exit(0)
     }
 
     func applicationWillTerminate(_ notification: Notification) {
