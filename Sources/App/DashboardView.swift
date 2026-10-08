@@ -29,6 +29,8 @@ struct DashboardView: View {
                 tilesCard
                 timersAndPlayer
                 historyCard
+                MadeByFooter()
+                    .padding(.top, 4)
             }
             .padding(24)
         }
