@@ -8,13 +8,11 @@ import Foundation
 public final class HotkeyMonitor {
     private var tap: CFMachPort?
     private var source: CFRunLoopSource?
-    private var lastPressAt: TimeInterval = 0
     private var isDown = false
-    private var modsHeld = false
 
+    /// Raw press and release of the dictation chord; ChordGesture tells taps from holds.
     public var onPressStart: (() -> Void)?
     public var onPressEnd: (() -> Void)?
-    public var onDoubleTap: (() -> Void)?
     public var onCycleLang: (() -> Void)?
     public var onEscape: (() -> Void)?
     public var onPasteLast: (() -> Void)?
@@ -69,11 +67,7 @@ public final class HotkeyMonitor {
             return Unmanaged.passUnretained(event)
         }
         let flags = event.flags
-        if type == .flagsChanged {
-            let both = flags.contains(.maskControl) && flags.contains(.maskAlternate)
-            if both { modsHeld = true } else { modsHeld = false; lastPressAt = 0 }
-            return Unmanaged.passUnretained(event)
-        }
+        if type == .flagsChanged { return Unmanaged.passUnretained(event) }
 
         let code = Int(event.getIntegerValueField(.keyboardEventKeycode))
         let chord = flags.contains(.maskControl) && flags.contains(.maskAlternate)
@@ -95,12 +89,8 @@ public final class HotkeyMonitor {
         if chord, noCmd, code == kVK_ANSI_Z {
             if type == .keyDown {
                 if event.getIntegerValueField(.keyboardEventAutorepeat) != 0 { return nil }
-                let now = Date().timeIntervalSince1970
-                let isDouble = modsHeld && (now - lastPressAt) < DictationLimits.doubleTapWindow
-                lastPressAt = now
-                modsHeld = true
                 isDown = true
-                DispatchQueue.main.async { isDouble ? self.onDoubleTap?() : self.onPressStart?() }
+                DispatchQueue.main.async { self.onPressStart?() }
             } else if type == .keyUp {
                 isDown = false
                 DispatchQueue.main.async { self.onPressEnd?() }

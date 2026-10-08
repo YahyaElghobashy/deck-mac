@@ -159,7 +159,7 @@ struct DictationHUDView: View {
             LiveMeter(levels: state.levels, dimmed: paused)
             VStack(alignment: .leading, spacing: 2) {
                 Text(paused ? "Paused" : (locked ? "Locked on" : "Listening")).font(DT.ui(13, .semibold)).foregroundColor(DT.fg)
-                Text(paused ? "Resume or stop when ready" : (locked ? "Hands free · ⌃⌥Z or Stop ends it" : "Release to transcribe · tap Z again to lock"))
+                Text(paused ? "Resume or stop when ready" : (locked ? "Hands free · ⌃⌥Z or Stop ends it" : "Release to transcribe · double-tap to lock"))
                     .font(DT.ui(10.5)).foregroundColor(DT.faint)
             }
             Spacer(minLength: 2)

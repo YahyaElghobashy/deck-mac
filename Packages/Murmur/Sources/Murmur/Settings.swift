@@ -1,8 +1,8 @@
 import Carbon.HIToolbox
 import Foundation
 
-// Deck's dictation module, Murmur. Hold ⌃⌥Z to talk; tap Z again while ⌃⌥ is still held to
-// lock hands-free; ⌃⌥. cycles the language. Whisper runs locally, the text is pasted at the
+// Deck's dictation module, Murmur. Hold ⌃⌥Z to talk; double-tap it to lock hands-free;
+// ⌃⌥. cycles the language. Whisper runs locally, the text is pasted at the
 // cursor, the audio is deleted on every path.
 
 public enum DictationPaths {
@@ -129,6 +129,9 @@ public enum DictationLimits {
     public static let maxRecordSeconds: TimeInterval = 120
     public static let minRecordSeconds: TimeInterval = 0.4
     public static let transcribeTimeout: TimeInterval = 90
-    public static let doubleTapWindow: TimeInterval = 0.45
+    /// A press shorter than this is a tap, not push-to-talk.
+    public static let tapMaxSeconds: TimeInterval = 0.30
+    /// A second press this soon after a tap locks hands-free.
+    public static let doubleTapWindow: TimeInterval = 0.40
     public static let silenceRMSFloor: Float = 0.004
 }

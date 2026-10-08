@@ -18,6 +18,8 @@ final class DictationController {
     private var bag = Set<AnyCancellable>()
     private var recordingStart: Date?
     private var store: Store?
+    private var gesture = ChordGesture()
+    private var gestureTimer: Timer?
 
     private init() {}
 
@@ -114,10 +116,12 @@ final class DictationController {
     private func wireHotkey() {
         hotkey.onPressStart = { [weak self] in
             guard let self else { return }
-            if self.state.isLocked { self.finishRecording() } else { self.beginRecording(locked: false) }
+            self.act(self.gesture.press(at: Self.now))
         }
-        hotkey.onDoubleTap = { [weak self] in self?.lockRecording() }
-        hotkey.onPressEnd = { [weak self] in self?.releaseKey() }
+        hotkey.onPressEnd = { [weak self] in
+            guard let self else { return }
+            self.act(self.gesture.release(at: Self.now))
+        }
         hotkey.onEscape = { [weak self] in self?.cancel() }
         hotkey.onPasteLast = { [weak self] in self?.pasteLast() }
         hotkey.onCopyLast = { [weak self] in self?.copyLast() }
@@ -165,10 +169,45 @@ final class DictationController {
         }
     }
 
-    private func releaseKey() {
-        guard case .recording(let locked, _) = state.phase else { return }
-        if locked { return }
-        finishRecording()
+    // MARK: Hold, tap, double-tap
+
+    private static var now: TimeInterval { ProcessInfo.processInfo.systemUptime }
+
+    /// Does what the chord gesture decided, and arms a timer while it waits for a second tap.
+    private func act(_ action: ChordGesture.Action) {
+        gestureTimer?.invalidate(); gestureTimer = nil
+        switch action {
+        case .none:
+            break
+        case .start:
+            if case .recording = state.phase { discardQuietly() }   // a lone tap still recording
+            beginRecording(locked: false)
+        case .lock:
+            lockRecording()
+        case .finish:
+            finishRecording()
+        case .cancelTap:
+            discardQuietly()
+            flash(.warning("Hold ⌃⌥Z to talk · double-tap to lock"), for: 1.4)
+        }
+        if let deadline = gesture.tickDeadline {
+            gestureTimer = Timer.scheduledTimer(withTimeInterval: max(0, deadline - Self.now) + 0.02, repeats: false) { [weak self] _ in
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.act(self.gesture.tick(at: Self.now))
+                }
+            }
+        }
+    }
+
+    /// Drops the current recording without a sound or a message (a lone tap).
+    private func discardQuietly() {
+        ticker?.invalidate(); ticker = nil
+        recordingStart = nil
+        recorder.discard()
+        hud.setInteractive(false)
+        state.phase = .idle
+        hud.hide(after: 0)
     }
 
     private func togglePause() {
@@ -181,6 +220,7 @@ final class DictationController {
 
     private func cancel() {
         guard state.isBusy else { return }
+        gesture.reset(); gestureTimer?.invalidate(); gestureTimer = nil
         hud.setInteractive(false)
         ticker?.invalidate(); ticker = nil
         recordingStart = nil
@@ -191,6 +231,7 @@ final class DictationController {
 
     private func finishRecording() {
         guard case .recording = state.phase else { return }
+        gesture.reset(); gestureTimer?.invalidate(); gestureTimer = nil
         let releasedAt = Date()
         if recorder.isPaused { recorder.resume() }
         ticker?.invalidate(); ticker = nil
@@ -296,6 +337,7 @@ final class DictationController {
     // MARK: Feedback
 
     private func fail(_ error: Error) {
+        gesture.reset(); gestureTimer?.invalidate(); gestureTimer = nil
         ticker?.invalidate(); ticker = nil
         recordingStart = nil
         let ve = error as? VoiceError

@@ -123,7 +123,7 @@ struct DictationPanel: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(d.armed ? "Dictation · hold ⌃⌥Z" : "Dictation needs Accessibility")
                         .font(.system(size: 12, weight: .bold, design: .rounded)).foregroundStyle(Theme.text)
-                    Text(d.armed ? "tap Z again while holding ⌃⌥ to lock · ⌃⌥. language · \(d.totalWords.formatted()) words so far"
+                    Text(d.armed ? "double-tap to lock hands-free · ⌃⌥. language · \(d.totalWords.formatted()) words so far"
                                  : "Turn Deck on under Privacy → Accessibility")
                         .font(.system(size: 10.5)).foregroundStyle(Theme.text3).lineLimit(2)
                 }

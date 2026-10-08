@@ -15,6 +15,8 @@ import SQLite3
 //     Checks the 24-hour window for paste-last and copy-last, and the shortcut key codes.
 // murmur check-store
 //     Creates, migrates, fills, searches and reopens a throwaway database in a temp folder.
+// murmur check-gestures
+//     Plays timed press/release sequences through ChordGesture: holds, taps, double-taps.
 // murmur check-paste
 //     Shows which key ⌘V uses on each enabled keyboard layout. Read-only: no layout is switched.
 
@@ -99,6 +101,38 @@ case "check-paste":
 
 case "check-store":
     exit(StoreCheck.run() ? 0 : 1)
+
+case "check-gestures":
+    var ok = true
+    func run(_ name: String, _ events: [(String, Double)], expect: [ChordGesture.Action]) {
+        var g = ChordGesture()
+        var got: [ChordGesture.Action] = []
+        for (kind, t) in events {
+            let a: ChordGesture.Action
+            switch kind {
+            case "press": a = g.press(at: t)
+            case "release": a = g.release(at: t)
+            default: a = g.tick(at: t)
+            }
+            if a != .none { got.append(a) }
+        }
+        let pass = got == expect
+        print("\(pass ? "PASS" : "FAIL")  \(name)\(pass ? "" : "  (got \(got))")"); ok = ok && pass
+    }
+    run("hold 2 s then release: push-to-talk", [("press", 0), ("release", 2)], expect: [.start, .finish])
+    run("hold just past the tap limit: push-to-talk", [("press", 0), ("release", 0.31)], expect: [.start, .finish])
+    run("double-tap within 400 ms locks", [("press", 0), ("release", 0.12), ("press", 0.40), ("release", 0.5)], expect: [.start, .lock])
+    run("a press while locked finishes", [("press", 0), ("release", 0.1), ("press", 0.3), ("release", 0.4), ("press", 9), ("release", 9.1)],
+        expect: [.start, .lock, .finish])
+    run("a lone tap is cancelled after the window", [("press", 0), ("release", 0.1), ("tick", 0.3), ("tick", 0.52)], expect: [.start, .cancelTap])
+    run("a second press after the window starts fresh", [("press", 0), ("release", 0.1), ("press", 0.8), ("release", 3)],
+        expect: [.start, .start, .finish])
+    run("taps with ⌃⌥ held or re-pressed behave the same (the 'Z again' lock)", [("press", 0), ("release", 0.2), ("press", 0.55)],
+        expect: [.start, .lock])
+    run("a hold right after a finished dictation starts a new one", [("press", 0), ("release", 1.5), ("press", 1.7), ("release", 3.5)],
+        expect: [.start, .finish, .start, .finish])
+    print(ok ? "all gesture checks passed" : "gesture checks FAILED")
+    exit(ok ? 0 : 1)
 
 case "check-last":
     var ok = true
