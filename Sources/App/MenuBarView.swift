@@ -177,6 +177,12 @@ struct RecoveryShortcuts: View {
             Text("after the last dictation · about 1.9 GB while loaded").font(.system(size: 11)).foregroundStyle(Theme.text3)
             Spacer()
         }
+        HStack(spacing: 6) {
+            Toggle("Keep recordings for 24 hours", isOn: Binding(get: { d.keepRecordings }, set: { DictationController.shared.setKeepRecordings($0) }))
+                .toggleStyle(.switch).controlSize(.mini).tint(DT.accent).font(.system(size: 11)).foregroundStyle(Theme.text2)
+            Text("last 20, on this Mac only, to fix dictations that came out wrong · off deletes them").font(.system(size: 11)).foregroundStyle(Theme.text3)
+            Spacer()
+        }
     }
 
     private func picker(_ title: String, selection: String, taken: String, set: @escaping (String) -> Void) -> some View {

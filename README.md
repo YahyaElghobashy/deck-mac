@@ -115,6 +115,10 @@ only, with a token file that never leaves the machine.
 
 - **Dictation is 100% local.** Audio is written to a temp file, transcribed by whisper.cpp on your
   Mac, and deleted on every code path. No network at all.
+- **Recent recordings, for troubleshooting.** While "Keep recordings for 24 hours" is on (Dashboard),
+  a copy of each of the last 20 recordings stays in `~/Library/Application Support/Deck/recordings`
+  with a note of what Deck wrote, so a dictation that came out wrong can be replayed and fixed.
+  Each is deleted after 24 hours; switching it off deletes them all. They never leave the Mac.
 - **The text you dictate stays on your Mac too.** It's kept in a local database
   (`~/Library/Application Support/Deck/deck.sqlite`) so ⌃⌥V can paste your last dictation again
   and, later, so you can search what you said. It never leaves the machine.

@@ -91,6 +91,11 @@ public enum DictationPrefs {
         get { d.object(forKey: "dictation.keepModelMinutes") == nil ? 10 : d.integer(forKey: "dictation.keepModelMinutes") }
         set { d.set(newValue, forKey: "dictation.keepModelMinutes") }
     }
+    /// Keep recent recordings on this Mac for troubleshooting (KeptRecordings). On unless turned off.
+    public static var keepRecordings: Bool {
+        get { d.object(forKey: "dictation.keepRecordings") == nil ? true : d.bool(forKey: "dictation.keepRecordings") }
+        set { d.set(newValue, forKey: "dictation.keepRecordings") }
+    }
     /// The app build whose Metal shaders have been compiled for the model (see `warmIfNewBuild`).
     public static var warmedBuild: String {
         get { d.string(forKey: "dictation.warmedBuild") ?? "" }

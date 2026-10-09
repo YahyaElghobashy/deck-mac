@@ -23,6 +23,9 @@ final class DictationController {
     /// Transcribes the current recording in pieces while it goes on (DIC-02), fed every 250 ms.
     private var stream: StreamingTranscriber?
     private var feedTimer: Timer?
+    /// This dictation's kept recording and the language decisions made for it (KeptRecordings).
+    private var keptRecording: URL?
+    private var streamEvents: [String] = []
 
     private init() {}
 
@@ -36,6 +39,8 @@ final class DictationController {
         state.totalWords = DictationPrefs.totalWords
         applyShortcutKeys()
         WhisperEngine.shared.idleUnload = TimeInterval(state.keepModelMinutes * 60)
+        KeptRecordings.directory = DeckPaths.dir.appendingPathComponent("recordings", isDirectory: true)
+        if state.keepRecordings { KeptRecordings.prune() } else { KeptRecordings.removeAll() }
         WhisperEngine.shared.onLoad = { [weak self] ms in
             DispatchQueue.main.async { self?.metric("model_load", ms: ms) }
         }
@@ -181,7 +186,11 @@ final class DictationController {
     private func startStream() {
         stopStream()
         let s = StreamingTranscriber(lang: state.lang, model: DictationPaths.model)
-        s.onEvent = { [weak self] kind, ms, detail in self?.metric(kind == "piece" ? "piece.whisper" : kind, ms: ms, detail: detail) }
+        streamEvents = []
+        s.onEvent = { [weak self] kind, ms, detail in
+            self?.metric(kind == "piece" ? "piece.whisper" : kind, ms: ms, detail: detail)
+            self?.streamEvents.append("\(kind) \(ms) ms  \(detail ?? "")")
+        }
         stream = s
         feedTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
             Task { @MainActor in
@@ -276,6 +285,7 @@ final class DictationController {
         if !heardSound { stopStream(); try? FileManager.default.removeItem(at: url); return flash(.warning("Nothing heard"), for: 1.6) }
         state.phase = .transcribing
         hud.show()
+        keptRecording = state.keepRecordings ? KeptRecordings.keep(url) : nil
         let lang = state.lang
         guard let stream else { return transcribeWholeFile(url, lang: lang, seconds: secs, releasedAt: releasedAt) }
         self.stream = nil
@@ -315,6 +325,9 @@ final class DictationController {
         let pasted = Inserter.deliver(text) { [weak self] verdict in self?.pasteChecked(verdict, text: text) }
         let method = Inserter.lastMethod.rawValue
         DebugLog.write("dictation \(t.language) via \(t.engine), \(pieces) piece(s), text \(releaseMs) ms after release, delivered via \(method)")
+        KeptRecordings.annotate(keptRecording, ["text: \(text)", "language: \(t.language) via \(t.engine), \(pieces) piece(s)",
+                                                 "release to text: \(releaseMs) ms, delivered via \(method)", ""] + streamEvents)
+        keptRecording = nil
         save(DictationRecord(text: text, lang: t.language, engine: t.engine, delivery: method,
                              appBundleID: app, audioSeconds: secs, transcribeMs: t.inferMs))
         metric("release_to_text.\(t.engine)", ms: releaseMs, detail: String(format: "%.1fs %@ %d piece(s)", t.audioSeconds, t.language, pieces))
@@ -406,6 +419,8 @@ final class DictationController {
         recordingStart = nil
         let ve = error as? VoiceError
         let msg = ve?.errorDescription ?? error.localizedDescription
+        KeptRecordings.annotate(keptRecording, ["failed: \(msg)", ""] + streamEvents)
+        keptRecording = nil
         state.phase = .failed(msg)
         DictationSound.fail()
         hud.show()
@@ -428,6 +443,10 @@ final class DictationController {
     func setSounds(_ on: Bool) { DictationPrefs.sounds = on; state.sounds = on }
     func setPasteLastKey(_ k: String) { DictationPrefs.pasteLastKey = k; state.pasteLastKey = k; applyShortcutKeys() }
     func setCopyLastKey(_ k: String) { DictationPrefs.copyLastKey = k; state.copyLastKey = k; applyShortcutKeys() }
+    func setKeepRecordings(_ on: Bool) {
+        DictationPrefs.keepRecordings = on; state.keepRecordings = on
+        if !on { KeptRecordings.removeAll() }
+    }
     func setKeepModelMinutes(_ m: Int) {
         DictationPrefs.keepModelMinutes = m; state.keepModelMinutes = m
         WhisperEngine.shared.idleUnload = TimeInterval(m * 60)
