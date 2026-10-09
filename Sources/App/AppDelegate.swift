@@ -12,6 +12,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let i = CommandLine.arguments.firstIndex(of: "--render-setup"), i + 1 < CommandLine.arguments.count {
             renderSetup(to: CommandLine.arguments[i + 1])   // a PNG of "Set up dictation", for checks; then quits
         }
+        if let i = CommandLine.arguments.firstIndex(of: "--render-dictation-settings"), i + 1 < CommandLine.arguments.count {
+            renderDictationSettings(to: CommandLine.arguments[i + 1])   // the Dashboard's dictation settings rows
+        }
         SuiteFlags.handle(appName: "Deck")
         DebugLog.write("Deck launched")
         Task { @MainActor in BridgeSupervisor.shared.start() }
@@ -29,7 +32,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @MainActor private func renderSetup(to path: String) -> Never {
-        let renderer = ImageRenderer(content: SetupView().environment(\.colorScheme, .dark))
+        render(SetupView(), to: path)
+    }
+
+    @MainActor private func renderDictationSettings(to path: String) -> Never {
+        render(VStack(alignment: .leading, spacing: 8) { RecoveryShortcuts(alexaKey: "A") }
+            .padding(14).frame(width: 760).background(Color(white: 0.12)), to: path)
+    }
+
+    @MainActor private func render<V: View>(_ view: V, to path: String) -> Never {
+        let renderer = ImageRenderer(content: view.environment(\.colorScheme, .dark))
         renderer.scale = 2
         if let image = renderer.nsImage, let tiff = image.tiffRepresentation,
            let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {

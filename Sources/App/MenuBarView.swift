@@ -169,12 +169,23 @@ struct RecoveryShortcuts: View {
             Spacer()
         }
         HStack(spacing: 6) {
+            Text("Speech model").font(.system(size: 11)).foregroundStyle(Theme.text3)
+            Picker("", selection: Binding(get: { d.model }, set: { DictationController.shared.setModel($0) })) {
+                ForEach(SpeechModel.allCases, id: \.self) { Text($0.label).tag($0) }
+            }
+            .pickerStyle(.segmented).labelsHidden().frame(width: 150)
+            Text(d.model == .fast ? "large-v3-turbo · text about half a second after you let go"
+                                  : "large-v3 · fewer mistakes in Arabic and mixed speech · text about twice as slow")
+                .font(.system(size: 11)).foregroundStyle(Theme.text3)
+            Spacer()
+        }
+        HStack(spacing: 6) {
             Text("Keep the speech model loaded for").font(.system(size: 11)).foregroundStyle(Theme.text3)
             Picker("", selection: Binding(get: { d.keepModelMinutes }, set: { DictationController.shared.setKeepModelMinutes($0) })) {
                 ForEach([5, 10, 30, 60, 0], id: \.self) { Text($0 == 0 ? "until quit" : "\($0) min").tag($0) }
             }
             .labelsHidden().frame(width: 96)
-            Text("after the last dictation · about 1.9 GB while loaded").font(.system(size: 11)).foregroundStyle(Theme.text3)
+            Text("after the last dictation · about \(d.model.loadedGB) GB while loaded").font(.system(size: 11)).foregroundStyle(Theme.text3)
             Spacer()
         }
         HStack(spacing: 6) {

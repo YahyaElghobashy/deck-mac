@@ -30,12 +30,13 @@ final class DictationController {
     private init() {}
 
     func start() {
-        DictationPaths.modelPathProvider = { DeckSettings.load().whisperModelPath }
+        DictationPaths.modelPathProvider = { DictationPrefs.model.path(besides: DeckSettings.load().whisperModelPath) }
         DictationPrefs.migrateFromMurmur()
         DictationPrefs.adoptAutoLanguageOnce()
         state.lang = DictationPrefs.lang
         state.autoPaste = DictationPrefs.autoPaste
         state.sounds = DictationPrefs.sounds
+        state.model = DictationPrefs.model
         state.totalWords = DictationPrefs.totalWords
         applyShortcutKeys()
         WhisperEngine.shared.idleUnload = TimeInterval(state.keepModelMinutes * 60)
@@ -325,12 +326,13 @@ final class DictationController {
         let pasted = Inserter.deliver(text) { [weak self] verdict in self?.pasteChecked(verdict, text: text) }
         let method = Inserter.lastMethod.rawValue
         DebugLog.write("dictation \(t.language) via \(t.engine), \(pieces) piece(s), text \(releaseMs) ms after release, delivered via \(method)")
-        KeptRecordings.annotate(keptRecording, ["text: \(text)", "language: \(t.language) via \(t.engine), \(pieces) piece(s)",
+        KeptRecordings.annotate(keptRecording, ["text: \(text)", "language: \(t.language) via \(t.engine) \(state.model.whisperName), \(pieces) piece(s)",
                                                  "release to text: \(releaseMs) ms, delivered via \(method)", ""] + streamEvents)
         keptRecording = nil
         save(DictationRecord(text: text, lang: t.language, engine: t.engine, delivery: method,
                              appBundleID: app, audioSeconds: secs, transcribeMs: t.inferMs))
-        metric("release_to_text.\(t.engine)", ms: releaseMs, detail: String(format: "%.1fs %@ %d piece(s)", t.audioSeconds, t.language, pieces))
+        metric("release_to_text.\(t.engine)", ms: releaseMs,
+               detail: String(format: "%.1fs %@ %d piece(s) %@", t.audioSeconds, t.language, pieces, state.model.whisperName))
         metric("transcribe.\(t.engine)", ms: t.inferMs)
         if t.engine != "whisper" { metric("fallback.\(t.engine)") }
         metric("delivery.\(method)")
@@ -443,6 +445,23 @@ final class DictationController {
     func setSounds(_ on: Bool) { DictationPrefs.sounds = on; state.sounds = on }
     func setPasteLastKey(_ k: String) { DictationPrefs.pasteLastKey = k; state.pasteLastKey = k; applyShortcutKeys() }
     func setCopyLastKey(_ k: String) { DictationPrefs.copyLastKey = k; state.copyLastKey = k; applyShortcutKeys() }
+    func modelAvailable(_ m: SpeechModel) -> Bool {
+        FileManager.default.fileExists(atPath: m.path(besides: DeckSettings.load().whisperModelPath))
+    }
+
+    /// Switches the speech model. A loaded model is swapped now, unless a dictation is running:
+    /// then the next one loads it (it is preloaded on ⌃⌥Z).
+    func setModel(_ m: SpeechModel) {
+        guard m != state.model else { return }
+        guard modelAvailable(m) else {
+            flash(.warning("\(m.label) model not downloaded (\(m.fileName))"), for: 2.0)
+            return
+        }
+        DictationPrefs.model = m; state.model = m
+        DebugLog.write("speech model: \(m.whisperName)")
+        if !state.isBusy, WhisperEngine.shared.isLoaded { WhisperEngine.shared.preload(model: DictationPaths.model) }
+    }
+
     func setKeepRecordings(_ on: Bool) {
         DictationPrefs.keepRecordings = on; state.keepRecordings = on
         if !on { KeptRecordings.removeAll() }

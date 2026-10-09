@@ -136,7 +136,8 @@ public final class StreamingTranscriber {
         return { [self] in
             if speech >= Self.minTailSpeechSeconds { transcribePiece(tail, bounds: bounds) }
             if let failure { return .failure(failure) }
-            let text = texts.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+            // Repeats can also straddle two decoded stretches.
+            let text = Transcriber.collapseLoops(texts.joined(separator: " ")).trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { return .failure(VoiceError.empty) }
             let spoken = languages.isEmpty ? (LanguagePolicy.forced(lang) ?? "auto") : languages.joined(separator: "+")
             return .success(Transcript(text: text, engine: "whisper", language: spoken, loadMs: 0, inferMs: inferMs, audioSeconds: total))
@@ -244,8 +245,9 @@ public final class StreamingTranscriber {
         let prompt = SpeechPrompt.build(language: language, previous: previous)
         do {
             let t = try Transcriber.transcribe(samples + Self.trailingSilence, language: language, prompt: prompt)
-            if !t.text.isEmpty {
-                texts.append(t.text)
+            let text = texts.last.map { Transcriber.dropEcho(of: $0, from: t.text) } ?? t.text
+            if !text.isEmpty {
+                texts.append(text)
                 if languages.last != language { languages.append(language) }
             }
             inferMs += t.inferMs

@@ -44,6 +44,11 @@ func fail(_ message: String, code: Int32) -> Never {
     exit(code)
 }
 
+// Any command: --model path (or MURMUR_MODEL=path) uses another whisper model, for comparisons.
+if let model = value("--model") ?? ProcessInfo.processInfo.environment["MURMUR_MODEL"] {
+    DictationPaths.modelPathProvider = { model }
+}
+
 switch args.first {
 case "transcribe":
     guard args.count >= 2 else { fail("usage: murmur transcribe <file.wav> [--lang en|ar|auto] [--model path]", code: 64) }
@@ -355,10 +360,25 @@ case "check-language":
                           ("Ich teste jetzt das Diktat. Untertitel im Auftrag des ZDF", "Ich teste jetzt das Diktat."),
                           ("\"بطي تشكت مر\" \"بطي تشكت مر\" \"بطي تشكت مر\" \"بطي تشكت مر\"", "\"بطي تشكت مر\""),
                           ("no no no, that's not it", "no no no, that's not it"),
-                          ("Send it to Mariam. Send it to Mariam.", "Send it to Mariam. Send it to Mariam.")] {
+                          ("very very good", "very very good"),
+                          // large-v3's repeats on the one-voice lines (9 Oct)
+                          ("أنا بجرب الإملاء دلوقتي. أنا بجرب الإملاء دلوقتي. I'm testing the dictation now.",
+                           "أنا بجرب الإملاء دلوقتي. I'm testing the dictation now."),
+                          ("وبشوف بقى أنت عادي في الحتة دي وبشوف بقى أنت عادي في الحتة دي", "وبشوف بقى أنت عادي في الحتة دي"),
+                          ("I'm testing the dictation now. I'm testing the dictation now.", "I'm testing the dictation now.")] {
         let got = Transcriber.clean(input)
         check("clean-up: \(input.prefix(30))", got == want, got)
     }
+    for (previous, text, want) in [("أنا بجرب الخاصية دي دلوقتي.", "أنا بجرب الخاصية دي دلوقتي. وبعدين نشوف.", "وبعدين نشوف."),
+                                   ("First part. Send the report to Mariam.", "Send the report to Mariam. Then call her.", "Then call her."),
+                                   ("Send it.", "Send it now please.", "Send it now please."),
+                                   ("Quick update.", "Bitte schickt mir die Zahlen.", "Bitte schickt mir die Zahlen.")] {
+        let got = Transcriber.dropEcho(of: previous, from: text)
+        check("echo of the text before: \(text.prefix(26))", got == want, got)
+    }
+    check("Accurate model sits next to the fast one",
+          SpeechModel.accurate.path(besides: "/m/ggml-large-v3-turbo.bin") == "/m/ggml-large-v3.bin"
+          && SpeechModel.fast.path(besides: "/m/ggml-large-v3-turbo.bin") == "/m/ggml-large-v3-turbo.bin")
     print(ok ? "all language checks passed" : "language checks FAILED")
     exit(ok ? 0 : 1)
 

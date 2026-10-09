@@ -69,6 +69,10 @@ mid-sentence). Want smaller? Swap `ggml-large-v3-turbo.bin` for `ggml-large-v3-t
 (574 MB) or `ggml-small.bin` (488 MB) and point Settings at it. Then grant **Accessibility** so the
 ⌃⌥Z chord and the paste can work.
 
+Want fewer mistakes, especially in Arabic and mixed speech? Put `ggml-large-v3.bin` (3.1 GB, same
+URL with that name) next to it and pick **Accurate** in the Dashboard. The text arrives about
+twice as late, and the model takes more memory while loaded.
+
 Nothing else to install. Node and whisper ship **inside** the app. No Homebrew, no nvm, no terminal.
 
 ## The keys

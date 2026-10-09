@@ -50,6 +50,27 @@ public enum Lang: String, CaseIterable {
     }
 }
 
+/// Which whisper model transcribes dictation (decision D7, amended 9 October 2026: the user picks).
+/// Measured on the synthetic sets with Deck 1.3.0: Accurate makes fewer mistakes (Egyptian Arabic
+/// WER 7.3% → 4.2%, English terms kept 89% → 94%) and the text arrives about twice as late.
+public enum SpeechModel: String, CaseIterable {
+    case fast, accurate
+
+    /// The model file, next to the fast model's (DeckSettings.whisperModelPath).
+    public var fileName: String { self == .fast ? "ggml-large-v3-turbo.bin" : "ggml-large-v3.bin" }
+    public var label: String { self == .fast ? "Fast" : "Accurate" }
+    public var whisperName: String { self == .fast ? "large-v3-turbo" : "large-v3" }
+    /// Memory while loaded, as shown in the menu.
+    public var loadedGB: String { self == .fast ? "1.9" : "3.8" }
+
+    /// This model's file in the folder of `fastModelPath`.
+    public func path(besides fastModelPath: String) -> String {
+        let fast = NSString(string: fastModelPath).expandingTildeInPath
+        guard self == .accurate else { return fast }
+        return (NSString(string: fast).deletingLastPathComponent as NSString).appendingPathComponent(fileName)
+    }
+}
+
 public enum DictationPrefs {
     private static let d = UserDefaults.standard
     /// One-time import of Murmur's settings and word count.
@@ -90,6 +111,10 @@ public enum DictationPrefs {
     public static var keepModelMinutes: Int {
         get { d.object(forKey: "dictation.keepModelMinutes") == nil ? 10 : d.integer(forKey: "dictation.keepModelMinutes") }
         set { d.set(newValue, forKey: "dictation.keepModelMinutes") }
+    }
+    public static var model: SpeechModel {
+        get { SpeechModel(rawValue: d.string(forKey: "dictation.model") ?? "") ?? .fast }
+        set { d.set(newValue.rawValue, forKey: "dictation.model") }
     }
     /// Keep recent recordings on this Mac for troubleshooting (KeptRecordings). On unless turned off.
     public static var keepRecordings: Bool {

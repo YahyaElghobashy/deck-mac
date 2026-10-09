@@ -88,10 +88,29 @@ public enum Transcriber {
         "Subtitles by the Amara.org community",
     ]
 
-    /// A phrase of six or more characters said three or more times in a row is whisper looping on
-    /// audio it can't read, not speech: one copy stays.
-    static func collapseLoops(_ s: String) -> String {
-        s.replacingOccurrences(of: #"(\S.{5,}?)(?:[\s,.،"]*\1){2,}"#, with: "$1", options: .regularExpression)
+    /// whisper repeating itself, not speech: one copy stays. Two kinds: a phrase of six or more
+    /// characters three or more times in a row (looping on audio it can't read), and a stretch of
+    /// three or more words twice in a row (large-v3 often writes a sentence twice, 9 Oct 2026). A
+    /// sentence the speaker really says twice running is rare enough to lose.
+    public static func collapseLoops(_ s: String) -> String {
+        var t = s.replacingOccurrences(of: #"(?<!\S)(\S.{5,}?)(?:[\s,.،"]*\1){2,}"#, with: "$1", options: .regularExpression)
+        t = t.replacingOccurrences(of: #"(?<!\S)(\S+(?:\s+\S+){2,}?)(?:[\s,.،؟?!"]*\1)+(?!\S)"#, with: "$1", options: .regularExpression)
+        return t
+    }
+
+    /// A stretch that starts by repeating the end of the text before it (whisper copying the context
+    /// it was given): the repeat goes. Compares the previous text whole, then its last sentence of
+    /// three or more words.
+    public static func dropEcho(of previous: String, from text: String) -> String {
+        let trim: (String) -> String = { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        let t = trim(text)
+        var candidates = [trim(previous)]
+        let sentences = previous.split(whereSeparator: { ".!?؟".contains($0) }).map { trim(String($0)) }.filter { !$0.isEmpty }
+        if let last = sentences.last, last.split(separator: " ").count >= 3 { candidates.append(last) }
+        for c in candidates where !c.isEmpty && t.hasPrefix(c) {
+            return trim(String(t.dropFirst(c.count).drop { ".,،!?؟ ".contains($0) }))
+        }
+        return t
     }
 
     public static func clean(_ s: String) -> String {
