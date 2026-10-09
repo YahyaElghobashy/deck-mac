@@ -22,7 +22,11 @@ public enum VoiceError: LocalizedError {
 
 /// Captures the default input straight to a 16 kHz mono WAV — exactly what whisper wants.
 public final class Recorder {
-    private let engine = AVAudioEngine()
+    /// A fresh engine for every recording. Deck 1.2.1 kept one engine for its whole life, and
+    /// after a pause, or after macOS stopped it because the input device changed, `stop` left the
+    /// microphone tap installed; the next recording's `installTap` then raised an exception and
+    /// Deck quit (8 October 2026). A new engine also reads the current device's format.
+    private var engine = AVAudioEngine()
     private var file: AVAudioFile?
     private var converter: AVAudioConverter?
     private var url: URL?
@@ -68,6 +72,8 @@ public final class Recorder {
     public func start() throws {
         lock.lock(); peak = 0; samples16k.removeAll(keepingCapacity: true); lock.unlock()
         pausedAt = nil; pausedTotal = 0
+        teardown()
+        engine = AVAudioEngine()
         let input = engine.inputNode
         let hw = input.outputFormat(forBus: 0)
         guard hw.sampleRate > 0, hw.channelCount > 0 else { throw VoiceError.noInput }
@@ -118,15 +124,19 @@ public final class Recorder {
     @discardableResult
     public func stop() -> (url: URL?, seconds: TimeInterval) {
         let secs = duration
-        if engine.isRunning {
-            engine.inputNode.removeTap(onBus: 0)
-            engine.stop()
-        }
+        teardown()
         lock.lock(); file = nil; converter = nil; lock.unlock()
         startedAt = nil
         let u = url
         url = nil
         return (u, secs)
+    }
+
+    /// Removes the tap and stops the engine whatever state it is in (paused and device-stopped
+    /// engines report not running but keep their tap).
+    private func teardown() {
+        engine.inputNode.removeTap(onBus: 0)
+        engine.stop()
     }
 
     public func discard() {
