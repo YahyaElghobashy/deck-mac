@@ -7,8 +7,9 @@ import SQLite3
 // murmur transcribe <file.wav> [--lang en|ar|auto] [--model path]
 //     Runs the exact transcription path Deck uses and prints the text and the time it took. The
 //     input is copied first, because the transcriber deletes its audio on every path.
-// murmur transcribe-many <file.wav>… [--lang auto|en|ar] [--prompt none|"text"]
-//     Deck's exact in-process path over many files with the model loaded once; one JSON line each.
+// murmur transcribe-many <file.wav>… [--lang auto|en|ar]
+//     Deck's whole-recording path (phrase by phrase in AUTO) over many files with the model loaded
+//     once; one JSON line each.
 // murmur bench <file.wav>… [--runs N] [--lang auto|en|ar]
 //     Loads the model once, then times N in-process transcriptions per file (DIC-01).
 // murmur check-clipboard
@@ -21,11 +22,13 @@ import SQLite3
 //     Replays a file as a live recording (audio grows every 250 ms), transcribing at pauses the
 //     way Deck does, and prints release-to-text, the pieces and the joined text as JSON.
 // murmur cuts <file.wav>
-//     Where PauseChunker cuts the file, and each piece transcribed alone, with and without the prompt.
+//     Where PauseChunker puts phrase boundaries and piece cuts, each phrase's probe, and each phrase
+//     decoded alone in its own language.
 // murmur check-paste-verdict
 //     DEL-03's decision from the field before and after a paste, on edge cases.
 // murmur check-language
-//     The AUTO language policy on probe results measured on the synthetic set.
+//     The AUTO language policy: per-phrase routes, short phrases borrowing a neighbour's language,
+//     the prompts.
 // murmur check-gestures
 //     Plays timed press/release sequences through ChordGesture: holds, taps, double-taps.
 // murmur check-paste
@@ -51,10 +54,8 @@ case "transcribe":
     do { try FileManager.default.copyItem(at: source, to: copy) } catch {
         fail("cannot read \(source.path): \(error.localizedDescription)", code: 66)
     }
-    let promptArg = value("--prompt")
-    let prompt: String? = promptArg == "none" ? "" : promptArg   // nil = Deck's default prompt
     let started = Date()
-    Transcriber.run(wav: copy, lang: lang, prompt: prompt) { result in
+    Transcriber.run(wav: copy, lang: lang) { result in
         let ms = Int(Date().timeIntervalSince(started) * 1000)
         WhisperEngine.shared.shutdown()
         switch result {
@@ -68,6 +69,7 @@ case "probe":
     // murmur probe <file.wav>… [--seconds 2.5]: language detection on the first seconds of each file.
     let files = args.dropFirst().prefix { !$0.hasPrefix("--") }
     let seconds = Double(value("--seconds") ?? "2.5") ?? 2.5
+    if let c = value("--ctx").flatMap(Int32.init) { WhisperEngine.shared.probeAudioContext = c }
     do {
         for f in files {
             let all = try WavReader.samples(URL(fileURLWithPath: f))
@@ -85,19 +87,14 @@ case "probe":
 case "transcribe-many":
     let files = args.dropFirst().prefix { !$0.hasPrefix("--") }
     let lang = Lang(rawValue: value("--lang") ?? "auto") ?? .auto
-    let promptArg = value("--prompt")
-    let prompt: String? = promptArg == "none" ? "" : promptArg      // nil = Deck's default
-    let useProbe = lang == .auto && !args.contains("--no-probe")
     for f in files {
         var row: [String: Any] = ["file": f]
         do {
             let samples = try WavReader.samples(URL(fileURLWithPath: f))
-            // Like a streamed piece: the whole clip is probed, so the evidence is complete.
-            let probe = useProbe && samples.count >= 16_000
-                ? try WhisperEngine.shared.detectLanguage(samples, model: DictationPaths.model) : nil
-            let t = try Transcriber.transcribe(samples, lang: lang, probe: probe, complete: true, prompt: prompt)
-            row["decoded_as"] = LanguagePolicy.decide(mode: lang, probe: probe, complete: true).code
+            let t = try StreamingTranscriber.transcribeAll(samples, lang: lang, model: DictationPaths.model)
             row["text"] = t.text; row["language"] = t.language; row["infer_ms"] = t.inferMs; row["audio_seconds"] = t.audioSeconds
+        } catch VoiceError.empty {
+            row["text"] = ""
         } catch { row["error"] = "\(error)" }
         if let d = try? JSONSerialization.data(withJSONObject: row), let s = String(data: d, encoding: .utf8) { print(s) }
     }
@@ -194,20 +191,65 @@ case "cuts":
     do {
         let all = try WavReader.samples(URL(fileURLWithPath: args[1]))
         var chunker = PauseChunker()
-        var cuts: [Int] = []
         var fed = 0
-        while fed < all.count { fed = min(all.count, fed + 4_000); cuts += chunker.feed(Array(all.prefix(fed))) }
-        let bounds = [0] + cuts + [all.count]
+        while fed < all.count { fed = min(all.count, fed + 4_000); _ = chunker.feed(Array(all.prefix(fed))) }
+        let bounds = [0] + chunker.phraseCuts.filter { $0 < all.count } + [all.count]
+        let pieceCuts = Set(chunker.cuts)
         for i in 0..<(bounds.count - 1) {
-            let piece = Array(all[bounds[i]..<bounds[i + 1]])
-            let probe = try WhisperEngine.shared.detectLanguage(Array(piece.prefix(32_000)), model: DictationPaths.model)
-            let d = LanguagePolicy.decide(mode: .auto, probe: probe)
-            let with = try Transcriber.transcribe(piece, lang: .auto, probe: probe, prompt: SpeechPrompt.build(mixed: d.mixedPrompt))
-            let without = try Transcriber.transcribe(piece, lang: .auto, probe: probe, prompt: "")
-            print(String(format: "piece %d  %.2f–%.2f s  [%@]", i + 1, Double(bounds[i]) / 16_000, Double(bounds[i + 1]) / 16_000, d.code))
-            print("   prompt: \(with.text)\n   none:   \(without.text)")
+            let phrase = Array(all[bounds[i]..<bounds[i + 1]])
+            let seconds = Double(phrase.count) / 16_000
+            let probe = try WhisperEngine.shared.detectLanguage(phrase, model: DictationPaths.model)
+            let top3 = probe.sorted { $0.value > $1.value }.prefix(3).map { "\($0.key) \(Int($0.value * 100))%" }.joined(separator: ", ")
+            let code = LanguagePolicy.top(probe) ?? "ar"
+            let t = try Transcriber.transcribe(phrase + [Float](repeating: 0, count: 8_000), language: code,
+                                               prompt: SpeechPrompt.build(language: code))
+            print(String(format: "%@ %.2f–%.2f s (%.1f s%@)  probe %@  → %@", pieceCuts.contains(bounds[i]) ? "▌" : " ",
+                         Double(bounds[i]) / 16_000, Double(bounds[i + 1]) / 16_000, seconds,
+                         seconds < LanguagePolicy.minPhraseSeconds ? ", short" : "", top3, code))
+            print("     \(t.text)")
         }
     } catch { print("ERROR \(error)") }
+    WhisperEngine.shared.shutdown()
+    exit(0)
+
+case "track":
+    // murmur track <file.wav> [--win 1.5] [--hop 0.5] [--ctx 256]: the language of a sliding window.
+    let win = Double(value("--win") ?? "1.5") ?? 1.5, hop = Double(value("--hop") ?? "0.5") ?? 0.5
+    if let c = value("--ctx").flatMap(Int32.init) { WhisperEngine.shared.probeAudioContext = c }
+    do {
+        let all = try WavReader.samples(URL(fileURLWithPath: args[1]))
+        var t = 0.0
+        var line = ""
+        var total = 0
+        while Int((t + win) * 16_000) <= all.count {
+            let w = Array(all[Int(t * 16_000)..<Int((t + win) * 16_000)])
+            let t0 = Date()
+            let p = try WhisperEngine.shared.detectLanguage(w, model: DictationPaths.model)
+            total += Int(Date().timeIntervalSince(t0) * 1000)
+            let top = p.max { $0.value < $1.value }!
+            line += String(format: "%.1f:%@%d ", t + win / 2, top.key, Int(top.value * 100))
+            t += hop
+        }
+        print(line); print("probe time \(total) ms")
+    } catch { print("ERROR \(error)") }
+    WhisperEngine.shared.shutdown()
+    exit(0)
+
+case "compare":
+    // murmur compare <file.wav>… --langs de,en: each file decoded in each language, as JSON lines.
+    let files = args.dropFirst().prefix { !$0.hasPrefix("--") }
+    let langs = (value("--langs") ?? "en,ar").split(separator: ",").map(String.init)
+    for f in files {
+        var row: [String: Any] = ["file": f]
+        do {
+            let samples = try WavReader.samples(URL(fileURLWithPath: f)) + [Float](repeating: 0, count: 8_000)
+            for l in langs {
+                let t = try Transcriber.transcribe(samples, language: l, prompt: SpeechPrompt.build(language: l))
+                row[l] = t.text
+            }
+        } catch { row["error"] = "\(error)" }
+        if let d = try? JSONSerialization.data(withJSONObject: row), let s = String(data: d, encoding: .utf8) { print(s) }
+    }
     WhisperEngine.shared.shutdown()
     exit(0)
 
@@ -233,49 +275,90 @@ case "check-paste-verdict":
 
 case "check-language":
     var ok = true
-    func expect(_ name: String, _ mode: Lang, _ probe: [String: Float]?, _ code: String, mixed: Bool) {
-        let d = LanguagePolicy.decide(mode: mode, probe: probe)
-        let pass = d.code == code && d.mixedPrompt == mixed
-        print("\(pass ? "PASS" : "FAIL")  \(name)\(pass ? "" : "  (got \(d.code), mixed \(d.mixedPrompt))")"); ok = ok && pass
+    func check(_ name: String, _ pass: Bool, _ got: String = "") {
+        print("\(pass ? "PASS" : "FAIL")  \(name)\(pass || got.isEmpty ? "" : "  (got \(got))")"); ok = ok && pass
     }
-    expect("pure English (en 99%) decodes as English", .auto, ["en": 0.99], "en", mixed: false)
-    expect("pure Arabic (ar 97%) decodes as Arabic with the mixed prompt", .auto, ["ar": 0.97, "en": 0.01], "ar", mixed: true)
-    expect("mixed, Arabic-led (ar 48%, en 46%)", .auto, ["ar": 0.48, "en": 0.46], "ar", mixed: true)
-    expect("mixed, English-led (en 77%, ar 17%) stays on the Arabic route", .auto, ["en": 0.77, "ar": 0.17], "ar", mixed: true)
-    expect("French with a trace of English (fr 95%, en 3%) decodes as French", .auto, ["fr": 0.95, "en": 0.03], "fr", mixed: false)
-    expect("French (fr 99%) decodes as French", .auto, ["fr": 0.99], "fr", mixed: false)
-    expect("German (de 99%) decodes as German", .auto, ["de": 0.99], "de", mixed: false)
-    expect("too short to probe: English and Arabic route", .auto, nil, "ar", mixed: true)
-    expect("any Arabic (12%) takes the Arabic route even when English leads", .auto, ["en": 0.86, "ar": 0.12], "ar", mixed: true)
-    expect("English with a trace of Arabic (3%) stays English", .auto, ["en": 0.96, "ar": 0.03], "en", mixed: false)
-    expect("Arabic heard early then drowned out by German still counts (merged)", .auto,
-           LanguagePolicy.merge(["en": 0.69, "ar": 0.10], ["de": 0.75, "en": 0.22]), "ar", mixed: true)
-    expect("English then German in one piece (merged): Arabic route keeps both", .auto,
-           LanguagePolicy.merge(["en": 0.99], ["de": 0.99]), "ar", mixed: true)
-    expect("English, Arabic and German mixed (en 67%, ar 26%)", .auto, ["en": 0.67, "ar": 0.26, "de": 0.02], "ar", mixed: true)
-    expect("English and German mid-sentence (en 57%, de 40%): Arabic route keeps both", .auto, ["en": 0.57, "de": 0.40], "ar", mixed: true)
-    expect("German with English terms (de 99%) decodes as German", .auto, ["de": 0.99], "de", mixed: false)
-    func expectPartial(_ name: String, _ probe: [String: Float], _ code: String, englishOnly: Bool = false) {
-        let d = LanguagePolicy.decide(mode: .auto, probe: probe, complete: false)
-        let pass = d.code == code && d.englishOnlyEvidence == englishOnly
-        print("\(pass ? "PASS" : "FAIL")  \(name)\(pass ? "" : "  (got \(d.code))")"); ok = ok && pass
+    func route(_ name: String, _ probe: [String: Float], _ code: String, mixed: Bool) {
+        let d = LanguagePolicy.route(LanguagePolicy.top(probe) ?? "?")
+        check(name, d.code == code && d.mixedPrompt == mixed, "\(d.code), mixed \(d.mixedPrompt)")
     }
-    expectPartial("partial evidence of English alone takes the Arabic route (your 8 Oct dictation)", ["en": 0.98], "ar", englishOnly: true)
-    expectPartial("partial but confident German stays German", ["de": 0.97], "de")
-    expectPartial("partial, uncertain evidence takes the Arabic route", ["de": 0.6, "fr": 0.2], "ar")
-    for (input, want) in [("درست: Draft a follow up email.", "Draft a follow up email."),
-                          ("يعني send the report to Mariam", "send the report to Mariam"),
-                          ("كلم العميل وقوله", "كلم العميل وقوله"),
-                          ("ابعت ال report ل Mariam على Slack", "ابعت ال report ل Mariam على Slack"),
-                          ("Move the HubSpot sync to Friday.", "Move the HubSpot sync to Friday.")] {
-        let got = Transcriber.dropStrayArabicLead(input)
-        print("\(got == want ? "PASS" : "FAIL")  stray-lead guard: \(input.prefix(28))\(got == want ? "" : "  (got \(got))")"); ok = ok && got == want
+    route("Arabic phrase (ar 97%): Arabic token with the mixed prompt", ["ar": 0.97, "en": 0.01], "ar", mixed: true)
+    route("English phrase (en 98%): English token", ["en": 0.98], "en", mixed: false)
+    route("German phrase with English present (de 51%, en 7%): German, never the Arabic route (8 Oct)",
+          ["de": 0.51, "en": 0.07, "nl": 0.05], "de", mixed: false)
+    route("Accented English (en 90%, ar 5%): English", ["en": 0.90, "ar": 0.05], "en", mixed: false)
+    route("Arabic with English terms (ar 70%, en 25%): Arabic route keeps the terms", ["ar": 0.70, "en": 0.25], "ar", mixed: true)
+    route("French (fr 95%): French", ["fr": 0.95, "en": 0.03], "fr", mixed: false)
+    func resolve(_ name: String, _ heard: [String?], before: String?, _ want: [String?]) {
+        let got = LanguagePolicy.resolve(heard, before: before)
+        check(name, got == want, got.map { $0 ?? "nil" }.joined(separator: " "))
     }
-    expect("EN mode ignores the probe", .english, ["ar": 0.9], "en", mixed: false)
-    expect("AR mode ignores the probe", .arabic, ["fr": 0.9], "ar", mixed: true)
-    let mixedPrompt = SpeechPrompt.build(mixed: true), englishPrompt = SpeechPrompt.build(mixed: false)
-    let pass = mixedPrompt.hasPrefix("بنستخدم HubSpot") && mixedPrompt.contains("workflow في HubSpot") && !englishPrompt.contains("عايز")
-    print("\(pass ? "PASS" : "FAIL")  prompts: Arabic-framed terms first for mixed speech, no Arabic for English"); ok = ok && pass
+    resolve("short phrases take the previous phrase's language", ["ar", nil, "en", nil], before: nil, ["ar", "ar", "en", "en"])
+    resolve("a short phrase opening a piece takes the next one's", [nil, "de", "en"], before: "ar", ["de", "de", "en"])
+    resolve("a piece of short phrases takes the dictation's last language", [nil, nil], before: "en", ["en", "en"])
+    resolve("nothing to go on stays unknown", [nil], before: nil, [nil])
+    resolve("your 8 Oct dictation, phrase by phrase", ["ar", "en", "de", nil], before: nil, ["ar", "en", "de", "de"])
+    func short(_ name: String, _ probe: [String: Float], _ want: String?) {
+        let got = LanguagePolicy.shortPhrase(probe)
+        check(name, got == want, got ?? "borrow")
+    }
+    short("short German, clear (de 60%, en 34%): keeps German (8 Oct)", ["de": 0.60, "en": 0.34], "de")
+    short("short German heard as English (en 83%): borrows", ["en": 0.83, "pt": 0.03], nil)
+    short("short Arabic heard as Hungarian (hu 45%): borrows", ["hu": 0.45, "en": 0.14], nil)
+    short("short clear English (en 99%): keeps English", ["en": 0.99], "en")
+    check("may be mixed: en 56% + de 30% (no pause between them)", LanguagePolicy.mayBeMixed(["en": 0.56, "de": 0.30, "ar": 0.02]))
+    check("may be mixed: en 46% + de 13% (three languages, no pause)", LanguagePolicy.mayBeMixed(["en": 0.46, "de": 0.13, "ja": 0.04]))
+    check("not mixed: ar 97%", !LanguagePolicy.mayBeMixed(["ar": 0.97, "en": 0.01]))
+    check("not mixed: en 93% + de 4%", !LanguagePolicy.mayBeMixed(["en": 0.93, "de": 0.04]))
+    func runs(_ name: String, _ windows: String, _ want: String) {
+        // "ar99 en46 -": language and share per window, "-" for none.
+        let parsed: [(language: String, share: Float)?] = windows.split(separator: " ").map { w in
+            w == "-" ? nil : (String(w.prefix(2)), Float(w.dropFirst(2))! / 100)
+        }
+        let got = LanguagePolicy.runs(parsed).map { "\($0.language)\($0.first)-\($0.last)" }.joined(separator: " ")
+        check(name, got == want, got)
+    }
+    // Window shares measured on the one-voice test lines (1.5 s windows every 0.5 s).
+    runs("tight Arabic → English → German line", "ar97 ar97 ar89 ar96 en52 en96 en98 en99 en81 de77 de90 de47", "ar0-3 en5-8 de9-10")
+    runs("mid-sentence English → Arabic → German (German only at the end)", "en97 en87 en48 ar89 ar95 ar85 en33 en53 de65 de99",
+         "en0-1 ar3-5 de9-9")
+    runs("Arabic with one English term (a lone clear window inside)", "ar95 ar90 en92 ar88 ar93", "ar0-4")
+    runs("a lone window at the end must be very clear", "ar95 ar90 ar88 en80", "ar0-2")
+    runs("all unclear", "en40 ar50 -", "")
+    do {
+        // A tone with a 40 ms gap at 1.0 s: the quietest point between 0.7 and 1.3 s is the gap.
+        var tone = (0..<32_000).map { Float(sin(Double($0) * 0.05)) * 0.3 }
+        for i in 16_000..<16_640 { tone[i] = 0 }
+        let q = PauseChunker.quietest(tone, from: 11_200, to: 20_800)
+        check("quietest point lands in the gap", (16_000...16_640).contains(q), "\(q)")
+    }
+    func terms(_ name: String, _ langs: [String?], _ seconds: [Double], before: String?, _ want: [String?]) {
+        let got = LanguagePolicy.attachTerms(langs, seconds: seconds, before: before)
+        check(name, got == want, got.map { $0 ?? "nil" }.joined(separator: " "))
+    }
+    terms("an English term between Arabic joins the Arabic", ["ar", "en", "ar"], [1.5, 0.9, 1.2], before: nil, ["ar", "ar", "ar"])
+    terms("an English term inside German joins the German", ["de", "en", "de"], [0.9, 0.7, 1.4], before: nil, ["de", "de", "de"])
+    terms("a full English sentence stays English (8 Oct)", ["ar", "en", "de"], [3.5, 2.0, 1.7], before: nil, ["ar", "en", "de"])
+    terms("English terms with nothing else around stay English", ["en", "en"], [0.9, 1.0], before: nil, ["en", "en"])
+    terms("a term opening a piece joins the language before it", ["en", "ar"], [0.8, 2.0], before: "ar", ["ar", "ar"])
+    check("a term on its own is not a prompt echo", !SpeechPrompt.isEcho("HubSpot.", of: SpeechPrompt.build(language: "en")))
+    check("a sentence of the prompt is", SpeechPrompt.isEcho("أنا عايز أخلص الحاجة دي النهارده، ماشي؟", of: SpeechPrompt.build(language: "ar")))
+    check("EN mode forces English", LanguagePolicy.forced(.english) == "en")
+    check("AR mode forces Arabic", LanguagePolicy.forced(.arabic) == "ar")
+    check("AUTO forces nothing", LanguagePolicy.forced(.auto) == nil)
+    let ar = SpeechPrompt.build(language: "ar"), en = SpeechPrompt.build(language: "en"), de = SpeechPrompt.build(language: "de")
+    let arabic: (String) -> Bool = { $0.unicodeScalars.contains { (0x0600...0x06FF).contains($0.value) } }
+    check("Arabic prompt: Arabic-framed terms first, then the mixed example",
+          ar.hasPrefix("بنستخدم HubSpot") && ar.contains("workflow في HubSpot"))
+    check("English and German prompts carry no Arabic", !arabic(en) && !arabic(de) && en.hasPrefix("Terms:"))
+    for (input, want) in [("أنا بجرب الإملاء دلوقتي. ترجمة نانسي قنقر", "أنا بجرب الإملاء دلوقتي."),
+                          ("Ich teste jetzt das Diktat. Untertitel im Auftrag des ZDF", "Ich teste jetzt das Diktat."),
+                          ("\"بطي تشكت مر\" \"بطي تشكت مر\" \"بطي تشكت مر\" \"بطي تشكت مر\"", "\"بطي تشكت مر\""),
+                          ("no no no, that's not it", "no no no, that's not it"),
+                          ("Send it to Mariam. Send it to Mariam.", "Send it to Mariam. Send it to Mariam.")] {
+        let got = Transcriber.clean(input)
+        check("clean-up: \(input.prefix(30))", got == want, got)
+    }
     print(ok ? "all language checks passed" : "language checks FAILED")
     exit(ok ? 0 : 1)
 

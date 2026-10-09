@@ -21,22 +21,22 @@ public enum SpeechPrompt {
         "webhook", "API key", "workflow", "pipeline", "deal stage", "lifecycle stage", "MQL", "custom property",
     ]
 
-    /// The prompt for one dictation or chunk. `previous` is the text already transcribed in this
-    /// dictation, which keeps chunks consistent with each other.
+    /// The prompt for a whole recording decoded in one language (bench, whisper-cli fallback).
     public static func build(lang: Lang, previous: String? = nil) -> String {
-        build(mixed: lang != .english, previous: previous)
+        build(language: LanguagePolicy.forced(lang) ?? "ar", previous: previous)
     }
 
-    /// The Arabic route (Arabic token): the terms inside an Arabic sentence ("we use HubSpot and
-    /// Slack and …"), the dialect hint, the mixed example, then the terms as a plain English list.
-    /// With the Arabic token forced on all 30 synthetic clips, this order gave the best English
-    /// (WER 3.9%, one Arabic-script word leaking into English text against four for the order
-    /// without the closing list) while keeping 94% of English terms in mixed speech.
-    /// The English route: the terms as a plain English list.
-    public static func build(mixed: Bool, previous: String? = nil) -> String {
+    /// The prompt for a stretch decoded in `language`. `previous` is the text already transcribed
+    /// in that language in this dictation, which keeps the pieces consistent with each other.
+    ///
+    /// Arabic (the mixed route): the terms inside an Arabic sentence ("we use HubSpot and Slack
+    /// and …"), the dialect hint, the mixed example, then the terms as a plain English list. With
+    /// the Arabic token on all 30 synthetic clips, this order kept 94% of English terms in mixed
+    /// speech. Any other language: the terms as a plain list.
+    public static func build(language: String, previous: String? = nil) -> String {
         var parts: [String] = []
-        if mixed, !vocabulary.isEmpty { parts.append("بنستخدم " + vocabulary.joined(separator: " و ") + ".") }
-        if mixed {
+        if language == "ar" {
+            if !vocabulary.isEmpty { parts.append("بنستخدم " + vocabulary.joined(separator: " و ") + ".") }
             parts.append(egyptianHint)
             parts.append(mixedExample)
         }
@@ -48,9 +48,11 @@ public enum SpeechPrompt {
     }
 
     /// whisper sometimes returns its prompt, or a piece of it, when the audio holds no speech.
-    /// True when `text` is nothing but prompt material, so the result can be dropped.
+    /// True when `text` is nothing but a sizeable piece of the prompt, so the result can be dropped.
+    /// At least 20 characters: a term said on its own ("HubSpot", "workflow") is in the prompt's
+    /// term list too, and a shorter limit deleted it.
     public static func isEcho(_ text: String, of prompt: String) -> Bool {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
-        return t.count >= 6 && prompt.contains(t)
+        return t.count >= 20 && prompt.contains(t)
     }
 }

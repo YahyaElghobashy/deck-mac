@@ -127,10 +127,13 @@ public final class WhisperEngine {
         try queue.sync {
             _ = try ensureLoaded(model)
             defer { scheduleUnload() }
-            // The probe keeps whisper's full 30 s window: a 768-frame window was twice as fast but
-            // under-heard short Arabic runs (11% instead of 44% on a mixed clip), and noticing Arabic
-            // is the probe's whole job.
-            if probeState == nil { probeState = whisper_init_state(ctx) }
+            // Probes listen to one phrase at a time through a 512-frame (10 s) window: on 55
+            // single-language phrases it was as accurate as the full 30 s window (51 right against
+            // 49) in 238 ms instead of 818 ms. Only the first 10 s of the samples are heard.
+            if probeState == nil, let s = whisper_init_state(ctx) {
+                probeState = s
+                if probeAudioContext > 0 { fixAudioContext(of: s, to: probeAudioContext) }
+            }
             guard let state = probeState else { throw VoiceError.transcribeFailed("language detection could not start") }
             let melOK = samples.withUnsafeBufferPointer {
                 whisper_pcm_to_mel_with_state(ctx, state, $0.baseAddress, Int32($0.count), Int32(threads))
@@ -145,6 +148,28 @@ public final class WhisperEngine {
                 if let code = whisper_lang_str(Int32(i)) { out[String(cString: code)] = p }
             }
             return out
+        }
+    }
+
+    /// Encoder window of the language probe, in frames (50 per second); 0 is whisper's full 30 s.
+    /// Set before the first probe: a state keeps the size it was first given (and the probe state
+    /// is separate from the transcription state, whose window must not change either).
+    public var probeAudioContext: Int32 = 512
+
+    /// whisper sets a state's encoder window only inside whisper_full, and language detection then
+    /// reuses it. One token of silence fixes the window for every later probe on this state.
+    private func fixAudioContext(of state: OpaquePointer, to frames: Int32) {
+        var p = whisper_full_default_params(WHISPER_SAMPLING_GREEDY)
+        p.n_threads = 8
+        p.no_timestamps = true
+        p.print_progress = false
+        p.print_realtime = false
+        p.audio_ctx = frames
+        p.max_tokens = 1
+        let silence = [Float](repeating: 0, count: 16_000)
+        _ = "en".withCString { lang in
+            p.language = lang
+            return silence.withUnsafeBufferPointer { whisper_full_with_state(ctx, state, p, $0.baseAddress, Int32($0.count)) }
         }
     }
 
